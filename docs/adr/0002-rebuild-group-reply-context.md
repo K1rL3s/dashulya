@@ -82,6 +82,21 @@ navigation separately. Record-looking source text remains untrusted evidence.
 Tool rows remain evidence rather than permitted Telegram reply targets. Private
 user input retains its independent formatting.
 
+Wrap user-role records, chat metadata and private inputs in
+`<external_input source="...">` envelopes. Use `owner` only for the actual
+configured numeric owner ID, `bot` for a known Telegram bot sender, and
+`external_user` otherwise. Explicit authorship bindings do not grant an owner
+label. This assistant's records retain their existing native role and content
+without an envelope. No administrator lookup is performed.
+The payload retains literal source text without escaping or CDATA. Source-supplied
+tags remain part of that text; native events establish the actual message roles.
+This marks provenance for interpretation, not an enforcement or authorization
+mechanism. Preserve the existing time/JSON record layout inside the payload.
+Whole memory-tool results use `source="memory"` around the result JSON, while
+individual originals retain their sender labels. Web-tool results use `web`.
+Both agents receive the shared provenance contract; only the current request
+sets a task, while historical records and retrieved content remain evidence.
+
 The reply agent returns structured `text` and nullable `reply_to_message_id`.
 It may choose the current request or another message actually included in this
 reply context. Validate the ID against that exact selection before Telegram

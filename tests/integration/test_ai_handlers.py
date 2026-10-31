@@ -25,6 +25,7 @@ from tests.support import (
     DecisionOverride,
     DialogueOverride,
     RecorderOverride,
+    input_payload,
 )
 
 BOT_TOKEN = "123456789:TEST_ONLY_NOT_A_REAL_BOT_TOKEN"
@@ -342,7 +343,9 @@ class TestAIHandler(_AIHandlerFixture):
         assert self.decision_agent.ask.await_count == 3
         assert self.dialogue.reply.await_count == 3
         key = self.dialogue.recent_context.call_args.args[0]
-        context = json.loads(self.decision_agent.ask.call_args.args[0])["current_message"]
+        context = json.loads(input_payload(self.decision_agent.ask.call_args.args[0]))[
+            "current_message"
+        ]
         assert key == (-123, None)
         assert self.dialogue.reply.call_args.args[0].key == key
         assert context["text"] == "DASHULYA, help"
@@ -360,7 +363,9 @@ class TestAIHandler(_AIHandlerFixture):
                 "text": "Let's discuss it",
             },
         )
-        context = json.loads(self.decision_agent.ask.call_args.args[0])["current_message"]
+        context = json.loads(input_payload(self.decision_agent.ask.call_args.args[0]))[
+            "current_message"
+        ]
         assert context["reply_to"]["sender_id"] == 43
         assert context["reply_to"]["text"] == "Let's discuss it"
         self.dialogue.reply.assert_not_awaited()

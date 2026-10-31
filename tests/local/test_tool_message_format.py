@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from ag2 import Agent, MemoryStream
-from ag2.events import DataInput, ModelRequest, TextInput, ToolCallEvent, ToolResultEvent
+from ag2.events import ModelRequest, TextInput, ToolCallEvent, ToolResultEvent
 from ag2.testing import TestConfig
 from dirty_equals import IsStr
 
@@ -34,6 +34,7 @@ from tests.support import (
     ModelOverrides,
     group_records,
     group_rows,
+    input_payload,
     reply_json,
 )
 
@@ -480,9 +481,9 @@ class TestToolMessageRoundtrip:
             assert len(events) == 2
             for event in events:
                 data = next(
-                    part.data
+                    json.loads(input_payload(part.content))
                     for part in event.result.parts
-                    if isinstance(part, DataInput)
+                    if isinstance(part, TextInput)
                 )
                 assert isinstance(data, dict)
                 blocks = data["message_blocks"]
@@ -550,7 +551,9 @@ class TestToolMessageRoundtrip:
             events, [backend.search.return_value, reader.query.return_value], strict=True
         ):
             data = next(
-                part.data for part in event.result.parts if isinstance(part, DataInput)
+                json.loads(input_payload(part.content))
+                for part in event.result.parts
+                if isinstance(part, TextInput)
             )
             assert data == formatter.result(raw, interlocutor_id=42)
             assert "author_user=42" in str(data)

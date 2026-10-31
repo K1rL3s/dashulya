@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from dataclasses import asdict
 from typing import Any
@@ -14,6 +15,8 @@ from ag2.extensions.tools.search.exa import (
 )
 from ag2.middleware import ToolExecution, ToolResultType
 from ag2.tools.tool import Tool
+
+from dashulya.ai.message_format import external_input
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +85,9 @@ def _bounded_output(event: ToolCallEvent, result: ToolResultType) -> ToolResultT
         }
     else:
         return _failure(event, "Web lookup returned an unreadable result.")
-    return ToolResultEvent.from_call(event, output)
+    return ToolResultEvent.from_call(
+        event, external_input(json.dumps(output, ensure_ascii=False), "web")
+    )
 
 
 async def _web_call(

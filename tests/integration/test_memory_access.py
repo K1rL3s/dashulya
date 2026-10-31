@@ -33,7 +33,7 @@ from dashulya.main.config import IMAGE_MAX_BYTES, Settings
 from dashulya.main.providers.ai import AgentProvider
 from dashulya.memory.history import CanonicalHistory
 from dashulya.memory.store import MessageStore
-from tests.support import TEST_API_KEY, reply_json
+from tests.support import TEST_API_KEY, memory_tool_data, reply_json
 
 NOW = datetime(2026, 10, 25, 12, tzinfo=UTC)
 GROUP = -100123
@@ -173,7 +173,7 @@ class TestMemoryAccessIntegration:
         access = MemoryAccess(GROUP, False, before=NOW, before_id=2)
         await agent.ask("Question", stream=stream, dependencies={"memory_access": access})
         results = await self.results(stream)
-        rendered = str([r.result for r in results])
+        rendered = str([memory_tool_data(event) for event in results])
         assert "Group source" in rendered
         assert "Foreign secret" not in rendered
         assert "Private secret" not in rendered
@@ -220,10 +220,11 @@ class TestMemoryAccessIntegration:
             stream=stream,
             dependencies={"memory_access": MemoryAccess(GROUP, False)},
         )
-        rendered = str([r.result for r in await self.results(stream)])
+        data = [memory_tool_data(event) for event in await self.results(stream)]
+        rendered = str(data)
         assert "Foreign secret" not in rendered
-        assert "'hits': []" in rendered
-        assert "'messages': []" in rendered
+        assert data[0]["hits"] == []
+        assert data[1]["messages"] == []
 
     async def test_missing_or_forged_trusted_dependency_fails_closed(
         self, subtests: pytest.Subtests
@@ -296,8 +297,10 @@ class TestMemoryAccessIntegration:
                 stream=stream,
                 dependencies={"memory_access": MemoryAccess(chat_id, False)},
             )
-        first = str([r.result for r in await self.results(streams[0])])
-        second = str([r.result for r in await self.results(streams[1])])
+        first = str([memory_tool_data(event) for event in await self.results(streams[0])])
+        second = str([
+            memory_tool_data(event) for event in await self.results(streams[1])
+        ])
         assert "Group source" in first
         assert "Foreign secret" not in first
         assert "Foreign secret" in second
@@ -340,8 +343,12 @@ class TestMemoryAccessIntegration:
                 ),
                 timeout=3,
             )
-        first_result = str([r.result for r in await self.results(first)])
-        second_result = str([r.result for r in await self.results(second)])
+        first_result = str([
+            memory_tool_data(event) for event in await self.results(first)
+        ])
+        second_result = str([
+            memory_tool_data(event) for event in await self.results(second)
+        ])
         assert "Group source" in first_result
         assert "Foreign secret" not in first_result
         assert "Foreign secret" in second_result
@@ -360,7 +367,7 @@ class TestMemoryAccessIntegration:
             variables={"chat_id": 42, "is_private": True},
             dependencies={"memory_access": MemoryAccess(GROUP, False)},
         )
-        result = str([r.result for r in await self.results(stream)])
+        result = str([memory_tool_data(event) for event in await self.results(stream)])
         assert "Group source" in result
         assert "Foreign secret" not in result
         assert "Private secret" not in result
@@ -388,6 +395,7 @@ class TestMemoryAccessIntegration:
         assert "Sender is bot:" not in rendered
         assert "User 100:" in rendered
         assert "@agent_name, bot" in rendered
+        assert context[-1]["text"].startswith('<external_input source="bot">')
         assert "username: unknown" not in rendered
         assert "Foreign secret" not in rendered
         assert config.calls == []
@@ -430,10 +438,10 @@ class TestMemoryAccessIntegration:
             dependencies={"memory_access": MemoryAccess(42, True)},
         )
         results = await self.results(stream)
-        first = results[0].result
+        first = memory_tool_data(results[0])
         assert "Foreign secret" not in str(first)
         assert "Private secret" not in str(first)
-        lookup = results[1].result
+        lookup = memory_tool_data(results[1])
         assert "distinct_handle" in str(lookup)
         assert "Distinct name" in str(lookup)
         assert "Foreign secret" not in str(lookup)

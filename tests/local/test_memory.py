@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 
 import pytest
 from ag2 import Agent, MemoryStream
-from ag2.events import ToolCallEvent, ToolResultEvent
+from ag2.events import TextInput, ToolCallEvent, ToolResultEvent
 from ag2.testing import TestConfig, TrackingConfig
 
 from dashulya.domain.memory import MemoryAccess
@@ -17,7 +17,13 @@ from dashulya.main import create_container
 from dashulya.main.config import Settings
 from dashulya.memory.index import build_memory
 from dashulya.memory.search import MemorySearch
-from tests.support import TEST_API_KEY, MemoryOverride, ModelOverrides, reply_json
+from tests.support import (
+    TEST_API_KEY,
+    MemoryOverride,
+    ModelOverrides,
+    input_payload,
+    reply_json,
+)
 
 
 @pytest.mark.usefixtures("_setup")
@@ -257,6 +263,9 @@ class TestMemory:
         events = await stream.history.get_events()
         results = [event for event in events if isinstance(event, ToolResultEvent)]
         assert len(results) == 1
-        assert "https://t.me/test_chat/2" in str(results[0].result)
+        part = results[0].result.parts[0]
+        assert isinstance(part, TextInput)
+        assert part.content.startswith('<external_input source="memory">')
+        assert "https://t.me/test_chat/2" in input_payload(part.content)
         assert results[0].name == "search_memory"
         assert len(config.calls[0].tools) == 3

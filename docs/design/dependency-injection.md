@@ -73,7 +73,10 @@ and direct-reply images. `Dialogue` selects fresh group context using the reques
 chat identity and resolves saved images through `ContextImages`; callers supply
 neither context dictionaries nor per-turn loading callbacks. Private requests
 retain their in-memory stream. History and turn locks stay together in `Dialogue`.
-The formatter receives `BOT_TIMEZONE` and the actual Telegram bot ID; it owns no chat authority or mutable conversation state.
+The formatter receives `BOT_TIMEZONE`, the actual Telegram bot ID and
+`OWNER_USER_ID`; it owns no chat authority or mutable conversation state.
+The owner ID supplies provenance labels for actual numeric senders, independently
+of authorship bindings. The addressing classifier receives the same owner ID.
 The provider adapts optional `OWNER_AUTHOR_IDS` into explicit sender-to-user
 authorship bindings for the formatter. These affect presentation only, not
 sender authorization or memory access. No binding is inferred from names.
@@ -104,14 +107,17 @@ retry policy, agent identities, prompts, and response schemas live in `ai`.
 Providers adapt validated application settings to those inputs, attach DI
 middleware, and supply dependencies. `OPENAI_MODEL` selects the reply model;
 `OPENAI_DECISION_MODEL` selects the addressing model.
-The reply prompts separate persona and reaction initiative, delivery rules, shared
+The reply prompts use Markdown headings and semantic XML sections for persona,
+reaction initiative, input provenance, reply workflow, delivery rules, shared
 input/citation semantics, historical evidence policy and web policy. Both agents
-receive one shared message-format system-prompt fragment; context and memory
+receive shared provenance and message-format system-prompt fragments; context and memory
 blocks contain data with incremental author/date declarations and time/JSON
 headers followed by original text. Tool
 docstrings own call parameters, result meanings and recovery contracts; these
 are not repeated in the shared prompts. The addressing classifier has its own
-intent rules and receives only the shared format fragment from the reply prompts.
+intent rules alongside those shared fragments. User inputs and tool evidence use
+`external_input` envelopes with literal source text; native assistant records
+remain unwrapped. Source labels describe origin, never extra permissions.
 The reply-agent factory also attaches `ReplyTrace` middleware for correlated
 model/tool timings, outcomes and token counts. It reads trusted `MemoryAccess`
 through an AG2 `Inject` annotation and records metadata without arguments,

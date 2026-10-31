@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 from ag2 import Agent
 from ag2.config import ModelConfig
+from ag2.events import TextInput, ToolResultEvent
 from aiogram import Bot
 from dishka import Provider, provide
 from dishka_ag2 import AG2Scope
@@ -29,8 +30,35 @@ def reply_json(text: str, reply_to_message_id: int | None = None) -> str:
     })
 
 
+def input_payload(text: str) -> str:
+    """Read one provenance envelope without including transport newlines."""
+    opening, separator, body = text.partition("\n")
+    assert separator == "\n"
+    assert re.fullmatch(r'<external_input source="[^"]+">', opening)
+    closing = "\n</external_input>"
+    assert body.endswith(closing)
+    return body[: -len(closing)]
+
+
+def memory_tool_data(event: ToolResultEvent) -> dict[str, Any]:
+    """Read the complete tool payload rather than AG2's truncated debug repr."""
+    assert len(event.result.parts) == 1
+    part = event.result.parts[0]
+    assert isinstance(part, TextInput)
+    assert part.content.startswith('<external_input source="memory">')
+    data = json.loads(input_payload(part.content))
+    assert isinstance(data, dict)
+    return data
+
+
 def group_records(text: str) -> list[dict[str, Any]]:
     """Read timestamp/JSON headers and source bodies from formatted evidence."""
+    text = re.sub(
+        r'<external_input source="[^"]+">\n.*?\n</external_input>',
+        lambda match: input_payload(match[0]),
+        text,
+        flags=re.DOTALL,
+    )
     records = []
     pattern = (
         r'^(\d{2}:\d{2}:\d{2}(?: \(UTC[+-]\d{2}:\d{2}\))?|Unknown time) (\{"id":.*\})\n'

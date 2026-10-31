@@ -316,6 +316,7 @@ async def serve(host: str, port: int) -> None:
     formatter = MessageFormatter(
         os.getenv("BOT_TIMEZONE", "Europe/Moscow"),
         bot_id,
+        owner_id=owner_id or None,
         author_users=dict.fromkeys(author_ids, owner_id) if owner_id else {},
     )
     try:

@@ -1,10 +1,11 @@
-from typing import Annotated, Any
+import json
+from typing import Annotated
 
 from ag2 import Variable
 from ag2.tools import tool
 from dishka_ag2 import FromDishka, inject
 
-from dashulya.ai.message_format import MessageFormatter
+from dashulya.ai.message_format import MessageFormatter, external_input
 from dashulya.domain.memory import MemoryBackend
 
 
@@ -22,7 +23,7 @@ async def search_memory(
     memory: FromDishka[MemoryBackend],
     formatter: FromDishka[MessageFormatter],
     user_id: Annotated[int | None, Variable(default=None)],
-) -> dict[str, Any]:
+) -> str:
     """Recall saved messages by meaning/keywords, or read a returned memory_id.
 
     Supply query or memory_id. chat narrows to a collection from chat_history(chats);
@@ -40,4 +41,7 @@ async def search_memory(
         before=before,
         limit=limit,
     )
-    return formatter.result(result, interlocutor_id=user_id)
+    return external_input(
+        json.dumps(formatter.result(result, interlocutor_id=user_id), ensure_ascii=False),
+        "memory",
+    )

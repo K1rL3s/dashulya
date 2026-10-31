@@ -16,7 +16,12 @@ from ag2.events import (
     TextInput,
 )
 
-from dashulya.ai.message_format import MessageFormatter, format_local_time
+from dashulya.ai.message_format import (
+    MessageFormatter,
+    external_input,
+    format_local_time,
+    input_source,
+)
 from dashulya.ai.tools.reactions import ReactionTurn
 from dashulya.domain.memory import (
     ChatHistory,
@@ -135,7 +140,9 @@ class Dialogue:
         )
 
     async def _group_input(
-        self, key: ConversationKey, current: MemoryMessage
+        self,
+        key: ConversationKey,
+        current: MemoryMessage,
     ) -> tuple[MemoryStream, str, tuple[MemoryMessage, ...]]:
         context = await self.select_context(key, current.message_id, current=current)
         events = self._formatter.events(
@@ -176,7 +183,10 @@ class Dialogue:
                 if isinstance(part, BinaryInput) and part.kind == BinaryType.IMAGE:
                     retained -= len(part.data)
                     event.parts[index] = TextInput(
-                        "[Earlier image omitted to stay within the image byte budget.]"
+                        external_input(
+                            "[Earlier image omitted to stay within the image byte budget.]",
+                            "external_user",
+                        )
                     )
         await stream.history.replace(events)
 
@@ -184,11 +194,33 @@ class Dialogue:
         self,
         images: tuple[ImageAttachment | ImageOmission, ...],
         allowed_ids: set[int] | None,
+        sources: tuple[MemoryMessage, ...],
+        user_id: int,
+        current_message_id: int | None,
     ) -> list[Input]:
         parts: list[Input] = []
         for image in images:
             if allowed_ids is not None and image.message_id not in allowed_ids:
                 continue
+            original = next(
+                (item for item in sources if item.message_id == image.message_id), None
+            )
+            source = input_source(
+                original.author_id
+                if original is not None
+                else user_id
+                if image.message_id == current_message_id
+                else None,
+                owner_id=self._formatter.owner_id,
+                is_bot=original is not None
+                and (
+                    original.is_bot is True
+                    or (
+                        self._formatter.bot_id is not None
+                        and original.author_id == self._formatter.bot_id
+                    )
+                ),
+            )
             if isinstance(image, ImageOmission):
                 reason = {
                     "too_large": f"too large for the {self._max_image_bytes / 1_000_000:g} MB image byte budget. ",
@@ -198,9 +230,12 @@ class Dialogue:
                 }[image.reason]
                 parts.append(
                     TextInput(
-                        f"[Image from Telegram message ID: {image.message_id} omitted: "
-                        f"{reason}"
-                        "Its contents are unavailable; do not guess what it shows.]"
+                        external_input(
+                            f"[Image from Telegram message ID: {image.message_id} omitted: "
+                            f"{reason}"
+                            "Its contents are unavailable; do not guess what it shows.]",
+                            source,
+                        )
                     )
                 )
                 continue
@@ -209,7 +244,7 @@ class Dialogue:
                 description += " This is only the first frame from the original animation. Later frames and motion are unavailable; do not infer them from this image."
             elif image.preview_kind is not None:
                 description += f" This is only a static {image.preview_kind} thumbnail. The animation and motion are unavailable; do not infer them from this preview."
-            parts.append(TextInput(description))
+            parts.append(TextInput(external_input(description, source)))
             binary = ImageInput(data=image.data, media_type=image.media_type)
             # Bound resizing for dense images; original detail may reject oversized dimensions.
             binary.vendor_metadata["detail"] = "high"
@@ -264,6 +299,7 @@ class Dialogue:
         )
         async with self._conversation(key).lock:
             stream = self._conversation(key).stream
+            selected: tuple[MemoryMessage, ...] = ()
             allowed_reply_ids: set[int] = set()
             if key[0] < 0:
                 if message_id is None:
@@ -290,8 +326,17 @@ class Dialogue:
                     )
             elif message_id is not None:
                 message += f"\nTelegram message ID: {message_id}"
+            if key[0] > 0:
+                message = external_input(
+                    message,
+                    input_source(request.user_id, owner_id=self._formatter.owner_id),
+                )
             image_inputs = self._image_inputs(
-                images, allowed_reply_ids if key[0] < 0 else None
+                images,
+                allowed_reply_ids if key[0] < 0 else None,
+                selected,
+                request.user_id,
+                message_id,
             )
             await self._trim_images(
                 stream,

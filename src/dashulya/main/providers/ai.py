@@ -58,6 +58,7 @@ class AgentProvider(Provider):
         return MessageFormatter(
             settings.bot_timezone,
             bot.id,
+            owner_id=settings.owner_user_id,
             author_users=dict.fromkeys(settings.owner_author_ids, settings.owner_user_id),
         )
 
@@ -132,6 +133,16 @@ class AgentProvider(Provider):
         )
 
     @provide
-    async def addressing(self, agent: Agent[bool], bot: Bot) -> GroupAddressing:
+    async def addressing(
+        self,
+        agent: Agent[bool],
+        bot: Bot,
+        formatter: MessageFormatter,
+    ) -> GroupAddressing:
         me = await bot.me()
-        return GroupAddressing(agent, bot_id=me.id, bot_username=me.username or "")
+        return GroupAddressing(
+            agent,
+            bot_id=me.id,
+            bot_username=me.username or "",
+            owner_id=formatter.owner_id,
+        )

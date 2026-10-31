@@ -3,7 +3,7 @@
 import json
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo
 
 from ag2.events import ModelMessage, ModelRequest, ModelResponse, TextInput
@@ -20,6 +20,26 @@ if TYPE_CHECKING:
     from datetime import date
 
 type Message = MemoryMessage | OriginalMessage
+type InputSource = Literal["external_user", "bot", "owner", "web", "memory"]
+
+
+def external_input(text: str, source: InputSource) -> str:
+    """Label application-owned provenance without changing the source text."""
+    return f'<external_input source="{source}">\n{text}\n</external_input>'
+
+
+def input_source(
+    user_id: int | None,
+    *,
+    owner_id: int | None = None,
+    is_bot: bool = False,
+) -> InputSource:
+    """Only numeric sender identity and verified Telegram flags establish a label."""
+    if is_bot:
+        return "bot"
+    if user_id is not None and user_id == owner_id:
+        return "owner"
+    return "external_user"
 
 
 def format_local_time(local: datetime, *, include_date: bool = False) -> str:
@@ -117,6 +137,7 @@ def _format_messages(
     *,
     timezone: ZoneInfo,
     bot_id: int | None,
+    owner_id: int | None = None,
     interlocutor_id: int | None = None,
     author_users: Mapping[int, int] | None = None,
     truncated_threads: Sequence[TruncatedThread] = (),
@@ -141,7 +162,7 @@ def _format_messages(
     result = [
         {
             "role": "user",
-            "text": f"{label}:\nchat: {chat}",
+            "text": external_input(f"{label}:\nchat: {chat}", "external_user"),
         }
     ]
     cuts = {thread.boundary_id: thread for thread in truncated_threads}
@@ -168,11 +189,21 @@ def _format_messages(
             f"{format_local_time(local) if local else 'Unknown time'} "
             + json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
         )
+        text = "\n".join(lines) + "\n" + message.text
+        assistant = bot_id is not None and message.author_id == bot_id
         result.append({
-            "role": "assistant"
-            if bot_id is not None and message.author_id == bot_id
-            else "user",
-            "text": "\n".join(lines) + "\n" + message.text,
+            "role": "assistant" if assistant else "user",
+            "text": text
+            if assistant
+            else external_input(
+                text,
+                input_source(
+                    message.author_id,
+                    owner_id=owner_id,
+                    is_bot=message.is_bot is True
+                    or (bot_id is not None and message.author_id == bot_id),
+                ),
+            ),
         })
         previous_day = local.date() if local else None
     return result
@@ -221,9 +252,11 @@ class MessageFormatter:
         bot_id: int | None = None,
         *,
         author_users: Mapping[int, int] | None = None,
+        owner_id: int | None = None,
     ) -> None:
         self.timezone = ZoneInfo(timezone)
         self.bot_id = bot_id
+        self.owner_id = owner_id
         self._author_users = dict(author_users or {})
 
     def context(
@@ -237,6 +270,7 @@ class MessageFormatter:
             messages,
             timezone=self.timezone,
             bot_id=self.bot_id,
+            owner_id=self.owner_id,
             interlocutor_id=interlocutor_id,
             author_users=self._author_users,
             truncated_threads=truncated_threads,
@@ -325,6 +359,7 @@ class MessageFormatter:
                         messages,
                         timezone=self.timezone,
                         bot_id=self.bot_id,
+                        owner_id=self.owner_id,
                         interlocutor_id=interlocutor_id,
                         author_users=self._author_users,
                         truncated_threads=[

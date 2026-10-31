@@ -4,7 +4,11 @@ import re
 
 from ag2 import Agent
 
-from dashulya.domain.messages import AddressingDecision, GroupMessage
+from dashulya.ai.message_format import external_input, input_source
+from dashulya.domain.messages import (
+    AddressingDecision,
+    GroupMessage,
+)
 
 _AGENT_NAME_PATTERN = re.compile(
     r"(?<!\w)(?:дашул(?:ь|я|и|е|ю|ей|ею)|dashulya)(?!\w)",  # ruff: ignore[ambiguous-unicode-character-string] -- Russian case endings and vocative.
@@ -13,10 +17,18 @@ _AGENT_NAME_PATTERN = re.compile(
 
 
 class GroupAddressing:
-    def __init__(self, agent: Agent[bool], *, bot_id: int, bot_username: str) -> None:
+    def __init__(
+        self,
+        agent: Agent[bool],
+        *,
+        bot_id: int,
+        bot_username: str,
+        owner_id: int | None = None,
+    ) -> None:
         self._agent = agent
         self._bot_id = bot_id
         self._bot_username = bot_username.casefold()
+        self._owner_id = owner_id
 
     async def should_reply(
         self,
@@ -51,12 +63,19 @@ class GroupAddressing:
         # Each classification has a fresh stream; decisions never enter reply history.
         async with asyncio.timeout(12):
             reply = await self._agent.ask(
-                json.dumps(
-                    {
-                        "current_message": message.context(),
-                        "recent_conversation": recent_conversation,
-                    },
-                    ensure_ascii=False,
+                external_input(
+                    json.dumps(
+                        {
+                            "current_message": message.context(),
+                            "recent_conversation": recent_conversation,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    input_source(
+                        message.sender_id,
+                        owner_id=self._owner_id,
+                        is_bot=message.sender_is_bot,
+                    ),
                 )
             )
             decision = await reply.content()

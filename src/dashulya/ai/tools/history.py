@@ -1,10 +1,11 @@
-from typing import Annotated, Any, Literal
+import json
+from typing import Annotated, Literal
 
 from ag2 import Variable
 from ag2.tools import tool
 from dishka_ag2 import FromDishka, inject
 
-from dashulya.ai.message_format import MessageFormatter
+from dashulya.ai.message_format import MessageFormatter, external_input
 from dashulya.domain.memory import HistoryReader
 
 
@@ -29,7 +30,7 @@ async def chat_history(
     history: FromDishka[HistoryReader],
     formatter: FromDishka[MessageFormatter],
     user_id: Annotated[int | None, Variable(default=None)],
-) -> dict[str, Any]:
+) -> str:
     """Read, page and count canonical saved originals independently of embeddings.
 
     action:
@@ -67,4 +68,7 @@ async def chat_history(
         topic_id=topic_id,
         parent_hops=parent_hops,
     )
-    return formatter.result(result, interlocutor_id=user_id)
+    return external_input(
+        json.dumps(formatter.result(result, interlocutor_id=user_id), ensure_ascii=False),
+        "memory",
+    )
