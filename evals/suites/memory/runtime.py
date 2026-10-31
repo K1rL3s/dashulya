@@ -43,7 +43,7 @@ from dashulya.domain.memory import (
     MemoryBackend,
     OriginalMessage,
 )
-from dashulya.domain.messages import Reply
+from dashulya.domain.messages import ReplyBatch
 from dashulya.memory.service import HybridChatMemory
 from dashulya.memory.store import MessageStore
 from dashulya.memory.vectors import EmbeddingCache
@@ -152,7 +152,7 @@ async def memory_agent(
     *,
     api_key: str,
     url: str,
-) -> AsyncGenerator[Agent[Reply], None]:
+) -> AsyncGenerator[Agent[ReplyBatch], None]:
     """Index only one prefix; neither gold evidence nor future rows are ingested."""
     async with (
         isolated_database(url) as database,
@@ -224,7 +224,7 @@ def input_context(query: dict[str, Any]) -> Sequence[BaseEvent]:
     return [ModelRequest(parts=[TextInput(json.dumps(formatted, ensure_ascii=False))])]
 
 
-async def capture(agent: Agent[Reply], query: dict[str, Any]) -> Trace:
+async def capture(agent: Agent[ReplyBatch], query: dict[str, Any]) -> Trace:
     stream = MemoryStream()
     await stream.history.replace(input_context(query))
     events: list[BaseEvent] = []

@@ -33,13 +33,17 @@ RESPONSE_RULES_PROMPT = """
 Keep factual claims accurate and express uncertainty where evidence is missing.
 Bounded or empty retrieval does not establish absence.
 
-Write the complete reply in text with light Markdown. Underline uses ^^text^^;
-spoilers use ||text||; tables become monospace blocks. Use Markdown, not HTML.
+Return messages as an ordered list of up to three messages, each with text and
+reply_to_message_id. Usually send one message; use two or three when separate
+thoughts or replies to different participants make the conversation more natural.
+Do not split a single thought just to use all three slots.
+Write each message's text with light Markdown. Underline uses ^^text^^;
+spoilers use ||text||; tables become monospace blocks.
 Use set_reaction for message reactions. When a reaction is sufficient, finish
-with empty text and null reply_to_message_id; substantive questions still need
+with an empty messages list; substantive questions still need
 a text answer. Explain tool failures in your own words when relevant.
 
-For reply_to_message_id, use null in private chats and when addressing the
+For each message's reply_to_message_id, use null in private chats and when addressing the
 current author. In groups, a request to reply to or greet someone else means
 send the direct answer to that participant, not a draft for the requester.
 Resolve the target from context, including explicitly identified channel-authored

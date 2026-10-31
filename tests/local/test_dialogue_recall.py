@@ -16,7 +16,7 @@ from dashulya.domain.memory import (
     MemoryAccess,
     MemoryBackend,
 )
-from dashulya.domain.messages import Reply, ReplyRequest
+from dashulya.domain.messages import Reply, ReplyBatch, ReplyRequest
 from dashulya.main import create_container
 from dashulya.main.config import Settings
 from tests.support import TEST_API_KEY, MemoryOverride, ModelOverrides, reply_json
@@ -32,7 +32,7 @@ class TestDialogueRecall:
 
     async def dialogue(
         self, *responses: str | ToolCallEvent
-    ) -> tuple[Dialogue, Agent[Reply], ChatMemoryService]:
+    ) -> tuple[Dialogue, Agent[ReplyBatch], ChatMemoryService]:
         self.backend = AsyncMock(spec=MemoryBackend)
         self.backend.search.return_value = {"coverage": {}, "hits": []}
         self.reader = AsyncMock(spec=HistoryReader)
@@ -45,12 +45,12 @@ class TestDialogueRecall:
         self.cleanup.push_async_callback(container.close)
         return (
             await container.get(Dialogue),
-            await container.get(Agent[Reply]),
+            await container.get(Agent[ReplyBatch]),
             await container.get(ChatMemoryService),
         )
 
     @staticmethod
-    async def reply(dialogue: Dialogue, *, chat_id: int = 42) -> Reply:
+    async def reply(dialogue: Dialogue, *, chat_id: int = 42) -> ReplyBatch:
         return await dialogue.reply(
             ReplyRequest(
                 (chat_id, None),
@@ -71,7 +71,9 @@ class TestDialogueRecall:
         with patch.object(service, "recall", wraps=service.recall) as recall:
             for chat_id in (42, -123):
                 for _ in range(2):
-                    assert await self.reply(dialogue, chat_id=chat_id) == Reply("Answer")
+                    assert await self.reply(dialogue, chat_id=chat_id) == ReplyBatch((
+                        Reply("Answer"),
+                    ))
         recall.assert_not_called()
         self.backend.search.assert_not_awaited()
         self.reader.query.assert_not_awaited()
@@ -94,7 +96,9 @@ class TestDialogueRecall:
             patch.object(agent, "ask", wraps=agent.ask) as ask,
             caplog.at_level("INFO", logger="dashulya.ai.agents.tracing"),
         ):
-            assert await self.reply(dialogue, chat_id=-123) == Reply("Answer")
+            assert await self.reply(dialogue, chat_id=-123) == ReplyBatch((
+                Reply("Answer"),
+            ))
         assert any(
             record.name == "dashulya.ai.agents.tracing"
             or record.name.startswith("dashulya.ai.agents.tracing.")
@@ -125,7 +129,7 @@ class TestDialogueRecall:
         with patch.object(
             service, "recall", side_effect=AssertionError("Recall was not requested")
         ):
-            assert (await self.reply(dialogue)).text == "Counted"
+            assert (await self.reply(dialogue)).messages[0].text == "Counted"
         self.reader.query.assert_awaited_once()
         self.backend.search.assert_not_awaited()
 

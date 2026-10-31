@@ -10,15 +10,81 @@ import httpx2
 import pytest
 from ag2 import Agent
 from ag2.config import OpenAIDecisionsConfig, OpenAIResponsesConfig
+from ag2.testing import TestConfig, TrackingConfig
+from pydantic import ValidationError
 
 from dashulya.ai.addressing import GroupAddressing
+from dashulya.ai.agents.factory import create_reply_agent
 from dashulya.ai.dialogue import Dialogue
 from dashulya.domain.memory import ChatHistory, MemoryMessage, ReplyContext
-from dashulya.domain.messages import GroupMessage, ImageAttachment, Reply, ReplyRequest
+from dashulya.domain.messages import (
+    GroupMessage,
+    ImageAttachment,
+    Reply,
+    ReplyBatch,
+    ReplyRequest,
+)
 from dashulya.main import create_container
 from dashulya.main.config import Settings
 from dashulya.memory.search import MemorySearch
+from dashulya.observability import JsonLogFormatter
 from tests.support import TEST_API_KEY, MemoryOverride, ModelOverrides, reply_json
+
+
+@pytest.mark.parametrize("count", [0, 1, 2, 3, 4])
+async def test_reply_schema_accepts_at_most_three_messages(count: int) -> None:
+    messages = [Reply(str(index), index) for index in range(count)]
+    payload = json.dumps({
+        "messages": [
+            {"text": item.text, "reply_to_message_id": item.reply_to_message_id}
+            for item in messages
+        ]
+    })
+    agent = create_reply_agent(TestConfig(payload), tools=[])
+    response = await agent.ask("Hi")
+    if count > 3:
+        with pytest.raises(ValidationError):
+            await response.content()
+    else:
+        assert await response.content() == ReplyBatch(tuple(messages))
+
+
+async def test_four_message_output_is_logged_and_rejected_without_another_model_call(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    output = json.dumps({
+        "messages": [
+            {"text": f"Part {index}", "reply_to_message_id": None} for index in range(4)
+        ]
+    })
+    config = TrackingConfig(
+        TestConfig(output, reply_json("A second call must not happen"))
+    )
+    dialogue = Dialogue(create_reply_agent(config, tools=[]))
+    with caplog.at_level("INFO", logger="dashulya"), pytest.raises(ValidationError):
+        await dialogue.reply(
+            ReplyRequest(
+                (42, None),
+                "Send four messages",
+                user_id=42,
+                user_name="Anna",
+                sent_at=datetime(2026, 10, 25, tzinfo=UTC),
+                message_id=10,
+            )
+        )
+    assert len(config.calls) == 1
+    events = [json.loads(JsonLogFormatter().format(record)) for record in caplog.records]
+    model = next(
+        event for event in events if event["message"] == "AI model call completed"
+    )
+    assert model["agent_output"] == output
+    assert model["message_count"] == 4
+    assert model["chat_id"] == 42
+    assert model["message_id"] == 10
+    failure = next(
+        event for event in events if event["message"] == "AI reply validation failed"
+    )
+    assert failure["validation_errors"] == [{"type": "too_long", "loc": ["messages"]}]
 
 
 @pytest.mark.usefixtures("_setup")
@@ -124,13 +190,18 @@ class TestAgentAPI:
                         message_id=message_id,
                     )
                 )
-                assert result == Reply("Fresh answer", 1)
+                assert result == ReplyBatch((Reply("Fresh answer", 1),))
         assert len(requests) == 2
         for request in requests:
             output_format = request["text"]["format"]
             assert output_format["type"] == "json_schema"
             assert output_format["strict"]
-            assert output_format["schema"]["required"] == ["text", "reply_to_message_id"]
+            schema = output_format["schema"]
+            assert schema["required"] == ["messages"]
+            assert schema["properties"]["messages"]["maxItems"] == 3
+            item_schema = schema["$defs"]["Reply"]
+            assert item_schema["required"] == ["text", "reply_to_message_id"]
+            assert not item_schema["additionalProperties"]
             assert not output_format["schema"]["additionalProperties"]
             instructions = request["instructions"]
             assert json.dumps(instructions).count("Message timezone: Asia/Tokyo.") == 1
@@ -335,7 +406,7 @@ class TestAgentAPI:
                 )
             )
 
-        assert reply == Reply("No matches in the snapshot.")
+        assert reply == ReplyBatch((Reply("No matches in the snapshot."),))
         assert len(requests) == 2
         assert requests[0]["model"] == "gpt-5.6-luna"
         assert requests[0]["reasoning"] == {"effort": "low"}

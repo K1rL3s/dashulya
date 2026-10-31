@@ -25,7 +25,7 @@ from dashulya.domain.memory import (
     MemoryAccess,
     MemoryBackend,
 )
-from dashulya.domain.messages import Reply
+from dashulya.domain.messages import ReplyBatch
 from dashulya.main.config import IMAGE_MAX_BYTES, Settings
 
 
@@ -87,7 +87,7 @@ class AgentProvider(Provider):
         container: AsyncContainer,
         memory: ChatMemoryService,
         settings: Settings,
-    ) -> Agent[Reply]:
+    ) -> Agent[ReplyBatch]:
         return create_reply_agent(
             models.reply,
             timezone=settings.bot_timezone,
@@ -119,7 +119,7 @@ class AgentProvider(Provider):
     @provide
     def dialogue(
         self,
-        agent: Agent[Reply],
+        agent: Agent[ReplyBatch],
         history: ChatHistory,
         formatter: MessageFormatter,
         context_images: ContextImages,

@@ -134,10 +134,12 @@ The selection has at most
 120 messages, with no additional token cap. See
 [the decision](docs/adr/0002-rebuild-group-reply-context.md).
 
-The agent returns structured reply text and an optional target message ID. It
-can reply to another message in the supplied group context; null or an ID outside
-that selection defaults to the triggering message. Every chunk uses the same
-target. Only the reply text is sent to Telegram.
+The agent returns up to three ordered messages, each with reply text and an
+optional target message ID. Each can reply to another message in the supplied
+group context; null or an ID outside that selection defaults to the triggering
+message. Each message is rendered and sent separately; long text still splits
+into Telegram-sized chunks sharing that message's target. Only the reply text
+is sent to Telegram.
 The reply agent uses `set_reaction(message_id, emoji)` for all reactions.
 Instructions require it to react only on its own initiative, independently
 choosing whether to react, the target and the emoji. It is encouraged to react
@@ -238,15 +240,24 @@ remain in UTC.
 Logs correlate model and tool calls with the triggering chat/message. Each tool
 has start/end events with its name, call ID, duration and outcome; model events
 include timings, input/output/reasoning token counts when supplied, and input
-image counts. Media loading and Telegram delivery have separate timings.
+image counts. Successful model-call events also include the raw `agent_output`,
+`message_count` from its JSON `messages` list (null when unavailable), and
+`tool_call_count`. Output is logged before schema validation, including invalid
+JSON or an oversized message list; model-call success does not imply valid output.
+`AI reply validation failed` records validation error types and field paths.
+Schema rejection does not automatically request another model response.
+Media loading and Telegram delivery have separate timings. Generated and
+delivered replies record their message count; delivery also records the number
+of confirmed Telegram chunks. `AI reply delivery failed` distinguishes `render`
+and `send` stages and retains the confirmed chunk count without retrying.
 Confirmed reactions log `Reaction delivered` with chat/message IDs, normalized
 emoji, duration and `outcome=sent`; rejected or unconfirmed attempts retain their
 separate outcomes. Rate limits log `Reaction rate limited` with `retry_after`
 in seconds and `outcome=rate_limited`. Typing errors produce a redacted warning.
 The typing task is cancelled and awaited when generation ends, so it cannot
 delay reply delivery.
-Conversation text, image bytes, tool arguments/results and provider error bodies
-are excluded from these trace events.
+Agent output text is included with credential redaction. Input conversation text,
+image bytes, tool arguments/results and provider error bodies remain excluded.
 
 ## Getting started
 

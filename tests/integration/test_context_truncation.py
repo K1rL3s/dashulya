@@ -179,7 +179,7 @@ class TestContextTruncation:
                     message_id=30,
                 )
             )
-        assert result.reply_to_message_id is None
+        assert result.messages[0].reply_to_message_id is None
         stream = agent_ask.call_args.kwargs["stream"]
         rendered = "\n".join(
             part.content

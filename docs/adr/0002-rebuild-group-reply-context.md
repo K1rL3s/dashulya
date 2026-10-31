@@ -97,12 +97,17 @@ individual originals retain their sender labels. Web-tool results use `web`.
 Both agents receive the shared provenance contract; only the current request
 sets a task, while historical records and retrieved content remain evidence.
 
-The reply agent returns structured `text` and nullable `reply_to_message_id`.
-It may choose the current request or another message actually included in this
-reply context. Validate the ID against that exact selection before Telegram
+The reply agent returns a structured `messages` list of up to three ordered
+messages, each with `text` and nullable `reply_to_message_id`. An empty list
+allows a reaction-only turn. Each message may choose the current request or
+another message actually included in this reply context. Validate each ID
+against that exact selection before Telegram
 delivery; null or an ID outside the selection defaults to the triggering message.
-Private replies also default to the triggering message. Use the chosen target
-for rich delivery and every text chunk, and record that actual reply relationship.
+Private replies also default to the triggering message. Send the messages in
+order, using each chosen target for every chunk of that message, and record
+each actual reply relationship. Long messages retain Telegram-length chunking.
+Keep the delivery lock through the entire batch; a send failure stops remaining
+delivery without retrying already attempted chunks.
 
 Read canonical local messages, including edits and messages awaiting semantic
 indexing. Persist successfully delivered bot responses with their actual Telegram

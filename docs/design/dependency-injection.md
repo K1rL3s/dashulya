@@ -32,7 +32,7 @@ ai/
   prompts.py             Persona and response instructions
 domain/
   groups.py              Group, GroupRepository, and GroupRegistry
-  messages.py            GroupMessage, AddressingDecision, Reply and ConversationKey
+  messages.py            GroupMessage, AddressingDecision, ReplyBatch, Reply and ConversationKey
   memory.py              MemoryAccess, canonical messages and memory interfaces
 ```
 
@@ -120,8 +120,10 @@ intent rules alongside those shared fragments. User inputs and tool evidence use
 remain unwrapped. Source labels describe origin, never extra permissions.
 The reply-agent factory also attaches `ReplyTrace` middleware for correlated
 model/tool timings, outcomes and token counts. It reads trusted `MemoryAccess`
-through an AG2 `Inject` annotation and records metadata without arguments,
-results or conversation bodies. Tool failures include full structured exception
+through an AG2 `Inject` annotation and records raw model output before validation,
+its message count when readable, and the number of tool calls. Input conversation
+bodies and tool arguments/results stay excluded; credential redaction also covers
+model output. Tool failures include full structured exception
 chains and stack frames. Invalid arguments use warning level; provider, database
 and unexpected failures use error level. Successful and cancelled calls use info
 level. Before a memory-tool error reaches
@@ -132,10 +134,17 @@ event for framework error handling; only the string result is sent to the model.
 `Dialogue` binds tool authority without running
 an automatic recall; the agent chooses which tools to call.
 
-The reply agent has an AG2 `ResponseSchema[Reply]` for `text` and nullable
-`reply_to_message_id`. `Dialogue` validates the parsed target against the same
-group-context snapshot that seeded the stream; private replies retain the default
-target. The result crosses into `bot` as the domain's `Reply`, with no AG2 objects.
+The reply agent has an AG2 `ResponseSchema[ReplyBatch]` for up to three ordered
+`messages`, each a `Reply` with `text` and nullable `reply_to_message_id`.
+`Dialogue` validates each parsed target against the same group-context snapshot
+that seeded the stream; private replies retain the default target. The result
+crosses into `bot` as the domain's `ReplyBatch`, with no AG2 objects. Delivery
+holds the conversation lock through all messages and their chunks; successful
+chunks are recorded individually, and a send failure stops the remaining batch.
+Schema validation failures log error types and field paths without input values
+or a model retry. Generated/delivered events record message counts; delivery
+also records confirmed Telegram chunks and distinguishes rendering from send
+failures.
 
 All reactions, including those on the triggering message, use the injected
 `ai/tools/reactions.py` tool. The application-scoped `TelegramReactions`
@@ -232,7 +241,7 @@ Both AG2 agents carry `DishkaAsyncMiddleware`. Each `Agent.ask()` opens a
 `SESSION`; injected tools open their own `REQUEST` beneath that session.
 These scopes are separate from the Telegram event. Agents retain the application
 container rather than the event container, so an AG2 turn opens its session
-without inheriting a Telegram request's lifetime. `Agent[Reply]` and `Agent[bool]`
+without inheriting a Telegram request's lifetime. `Agent[ReplyBatch]` and `Agent[bool]`
 distinguish the reply and addressing roles.
 
 The reply agent always registers `search_memory` and `chat_history` with `@tool`

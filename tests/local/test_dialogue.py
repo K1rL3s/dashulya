@@ -26,6 +26,7 @@ from dashulya.domain.messages import (
     ImageFile,
     ImageOmission,
     Reply,
+    ReplyBatch,
     ReplyRequest,
 )
 from dashulya.main import create_container
@@ -63,7 +64,7 @@ class TestDialogue:
             ModelOverrides(reply=self.config, decision=TestConfig("false")),
         )
         self.cleanup.push_async_callback(self.container.close)
-        self.agent = await self.container.get(Agent[Reply])
+        self.agent = await self.container.get(Agent[ReplyBatch])
         self.real_ask = self.agent.ask
         self.ask = AsyncMock(wraps=self.real_ask)
         ask_patch = patch.object(self.agent, "ask", self.ask)
@@ -79,12 +80,16 @@ class TestDialogue:
         sent_at: datetime = SENT_AT,
     ) -> str:
         return (
-            await self.dialogue.reply(
-                ReplyRequest(
-                    key, text, user_id=user_id, user_name="Anna", sent_at=sent_at
+            (
+                await self.dialogue.reply(
+                    ReplyRequest(
+                        key, text, user_id=user_id, user_name="Anna", sent_at=sent_at
+                    )
                 )
             )
-        ).text
+            .messages[0]
+            .text
+        )
 
     def last_stream(self) -> MemoryStream:
         return cast("MemoryStream", self.ask.call_args.kwargs["stream"])
@@ -282,7 +287,7 @@ class TestDialogue:
             Agent(
                 "empty",
                 config=TestConfig(ModelResponse()),
-                response_schema=ResponseSchema(Reply),
+                response_schema=ResponseSchema(ReplyBatch),
             )
         )
         assert (
@@ -293,7 +298,9 @@ class TestDialogue:
                         (42, None), "Hi", user_id=42, user_name="Anna", sent_at=SENT_AT
                     )
                 )
-            ).text
+            )
+            .messages[0]
+            .text
         )
 
     async def test_recent_context_is_isolated_and_does_not_modify_history(self) -> None:
@@ -523,7 +530,7 @@ class TestDialogue:
                     or record.name.startswith("dashulya.ai.dialogue.")
                     for record in caplog.records
                 )
-                assert result == Reply("Answer", expected)
+                assert result == ReplyBatch((Reply("Answer", expected),))
                 event = caplog.records[-1].__dict__
                 assert event["requested_reply_to_message_id"] == target
                 assert event["reply_to_message_id"] == (expected or 5)
@@ -544,7 +551,41 @@ class TestDialogue:
         result = await Dialogue(agent).reply(
             ReplyRequest((42, None), "Hi", user_id=42, user_name="Anna", sent_at=SENT_AT)
         )
-        assert result == Reply("Private answer")
+        assert result == ReplyBatch((Reply("Private answer"),))
+
+    async def test_each_message_target_is_validated_against_the_same_context(
+        self,
+    ) -> None:
+        self.history.context.return_value = ReplyContext((
+            MemoryMessage(-123, 1, "Earlier", SENT_AT, 99, "Boris", "Group"),
+        ))
+        agent = create_reply_agent(
+            TestConfig(
+                json.dumps({
+                    "messages": [
+                        {"text": " First ", "reply_to_message_id": 1},
+                        {"text": "Second", "reply_to_message_id": 5},
+                        {"text": "Third", "reply_to_message_id": 999},
+                    ],
+                })
+            ),
+            tools=[],
+        )
+        result = await Dialogue(agent, history=self.history, bot_id=123).reply(
+            ReplyRequest(
+                (-123, None),
+                "Hi",
+                user_id=42,
+                user_name="Anna",
+                sent_at=SENT_AT,
+                message_id=5,
+            )
+        )
+        assert result == ReplyBatch((
+            Reply("First", 1),
+            Reply("Second", 5),
+            Reply("Third"),
+        ))
 
     async def test_private_images_survive_followup_and_oldest_are_evicted_at_budget(
         self,

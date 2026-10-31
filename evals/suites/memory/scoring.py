@@ -99,7 +99,17 @@ def answer_text(outputs: dict[str, Any]) -> str:
             value = json.loads(outputs.get("body") or "{}")
         except (TypeError, ValueError):
             return ""
-    return value.get("text", "") if isinstance(value, dict) else ""
+    if not isinstance(value, dict):
+        return ""
+    if isinstance(value.get("messages"), list):
+        return "\n\n".join(
+            item["text"]
+            for item in value["messages"]
+            if isinstance(item, dict) and isinstance(item.get("text"), str)
+        )
+    # Preserve scoring of saved runs from before batched replies.
+    text = value.get("text", "")
+    return text if isinstance(text, str) else ""
 
 
 def canonical_count_matches(trace: Trace, aggregation: dict[str, Any]) -> bool:

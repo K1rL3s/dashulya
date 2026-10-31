@@ -20,7 +20,7 @@ from dashulya.ai.prompts import (
     TIMEZONE_PROMPT,
     WEB_SEARCH_PROMPT,
 )
-from dashulya.domain.messages import Reply
+from dashulya.domain.messages import ReplyBatch
 
 
 def create_decision_agent(
@@ -52,7 +52,7 @@ def create_reply_agent(
     tools: Iterable[Tool],
     timezone: str = "Europe/Moscow",
     middleware: Iterable[MiddlewareFactory] = (),
-) -> Agent[Reply]:
+) -> Agent[ReplyBatch]:
     return Agent(
         "dashulya",
         prompt=[
@@ -69,8 +69,8 @@ def create_reply_agent(
         tools=tools,
         config=config,
         response_schema=ResponseSchema(
-            Reply,
-            description="Telegram reply text and optional target message ID.",
+            ReplyBatch,
+            description="Up to three ordered Telegram messages, each with text and an optional target ID.",
         ),
         middleware=[Middleware(ReplyTrace), *middleware],
     )

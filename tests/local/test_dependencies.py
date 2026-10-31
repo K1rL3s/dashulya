@@ -19,7 +19,7 @@ from dashulya.ai.agents.models import AgentModels
 from dashulya.ai.dialogue import Dialogue
 from dashulya.database import Database
 from dashulya.domain.memory import ChatMemoryService
-from dashulya.domain.messages import Reply
+from dashulya.domain.messages import Reply, ReplyBatch
 from dashulya.main import create_container, run
 from dashulya.main.config import Settings
 from tests.scopes import ScopeProvider, ScopeTrace, inspect_scope
@@ -55,14 +55,14 @@ class TestDependency:
             ),
         )
         self.cleanup.push_async_callback(container.close)
-        reply = await container.get(Agent[Reply])
+        reply = await container.get(Agent[ReplyBatch])
         decision = await container.get(Agent[bool])
         dialogue = await container.get(Dialogue)
         assert id(reply) != id(decision)
         for _ in range(2):
             async with container() as event:
                 assert event.scope is AG2Scope.REQUEST
-                assert await event.get(Agent[Reply]) is reply
+                assert await event.get(Agent[ReplyBatch]) is reply
                 assert await event.get(Agent[bool]) is decision
                 assert await event.get(Dialogue) is dialogue
         memory = await container.get(ChatMemoryService)
@@ -73,7 +73,7 @@ class TestDependency:
             "chat_history",
             "set_reaction",
         ]
-        assert await (await reply.ask("Hello")).content() == Reply("Hello")
+        assert await (await reply.ask("Hello")).content() == ReplyBatch((Reply("Hello"),))
         assert await (await decision.ask("Addressed?")).content()
 
     async def test_model_policy_reaches_sdk_requests_and_bounds_retries(
@@ -133,9 +133,11 @@ class TestDependency:
                 },
             ),
         ):
-            cases: tuple[tuple[Agent[Reply] | Agent[bool], str, str, int, int], ...] = (
+            cases: tuple[
+                tuple[Agent[ReplyBatch] | Agent[bool], str, str, int, int], ...
+            ] = (
                 (
-                    await container.get(Agent[Reply]),
+                    await container.get(Agent[ReplyBatch]),
                     "/v1/responses",
                     "reply-model",
                     2,
@@ -189,7 +191,7 @@ class TestDependency:
             ),
         )
         self.cleanup.push_async_callback(container.close)
-        agent = await container.get(Agent[Reply])
+        agent = await container.get(Agent[ReplyBatch])
         await asyncio.gather(
             agent.ask("First", tools=[inspect_scope]),
             agent.ask("Second", tools=[inspect_scope]),
@@ -215,7 +217,7 @@ class TestDependency:
             ),
         )
         self.cleanup.push_async_callback(container.close)
-        agent = await container.get(Agent[Reply])
+        agent = await container.get(Agent[ReplyBatch])
         trace = await container.get(ScopeTrace)
         task = asyncio.create_task(agent.ask("Wait", tools=[inspect_scope]))
         try:

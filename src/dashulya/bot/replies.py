@@ -9,7 +9,7 @@ from dashulya.bot.chat_actions import typing
 from dashulya.bot.formatting import render_markdown
 from dashulya.bot.images import ImageInputError, TelegramImages
 from dashulya.bot.messages import conversation_key
-from dashulya.domain.messages import ImageAttachment, ImageOmission, ReplyRequest
+from dashulya.domain.messages import ImageAttachment, ImageOmission, Reply, ReplyRequest
 from dashulya.observability import exception_fields
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,6 @@ class ReplyDelivery:
             "message_id": message.message_id,
         }
         logger.info("AI request started", extra=context)
-        reply_to_message_id = message.message_id
         async with typing(self._bot, message):
             try:
                 images = await self._load_images(message) if message.chat.id > 0 else ()
@@ -74,18 +73,17 @@ class ReplyDelivery:
                         else None,
                     )
                 )
-                text = reply.text
-                reply_to_message_id = reply.reply_to_message_id or message.message_id
+                messages = reply.messages
                 logger.info(
                     "AI reply generated",
                     extra={
                         **context,
                         "duration_ms": round((perf_counter() - started) * 1000),
-                        "reply_to_message_id": reply_to_message_id,
+                        "message_count": len(messages),
                     },
                 )
             except ImageInputError as error:
-                text = str(error)
+                messages = (Reply(str(error)),)
             except Exception as error:
                 # Provider errors can contain request data; keep those out of logs and replies.
                 logger.warning(
@@ -96,27 +94,52 @@ class ReplyDelivery:
                         "duration_ms": round((perf_counter() - started) * 1000),
                     },
                 )
-                text = (
-                    "I couldn't get an AI reply right now. Please try again in a moment."
+                messages = (
+                    Reply(
+                        "I couldn't get an AI reply right now. Please try again in a moment."
+                    ),
                 )
-        if not text.strip():
+        if not messages:
             # Reaction outcomes were already handled within the agent's turn.
             return
-        reply_parameters = ReplyParameters(
-            message_id=reply_to_message_id, allow_sending_without_reply=True
-        )
         delivery_started = perf_counter()
-        for chunk, entities in render_markdown(text):
-            await message.answer(
-                chunk,
-                entities=entities,
-                parse_mode=None,
-                reply_parameters=reply_parameters,
+        chunk_count = 0
+        delivery_stage = "render"
+        try:
+            for item in messages:
+                reply_parameters = ReplyParameters(
+                    message_id=item.reply_to_message_id or message.message_id,
+                    allow_sending_without_reply=True,
+                )
+                for chunk, entities in render_markdown(item.text):
+                    delivery_stage = "send"
+                    await message.answer(
+                        chunk,
+                        entities=entities,
+                        parse_mode=None,
+                        reply_parameters=reply_parameters,
+                    )
+                    chunk_count += 1
+                    delivery_stage = "render"
+        except Exception as error:
+            logger.warning(
+                "AI reply delivery failed",
+                extra={
+                    **context,
+                    **exception_fields(error),
+                    "message_count": len(messages),
+                    "chunk_count": chunk_count,
+                    "delivery_stage": delivery_stage,
+                    "duration_ms": round((perf_counter() - delivery_started) * 1000),
+                },
             )
+            raise
         logger.info(
             "AI reply delivered",
             extra={
                 **context,
                 "duration_ms": round((perf_counter() - delivery_started) * 1000),
+                "message_count": len(messages),
+                "chunk_count": chunk_count,
             },
         )

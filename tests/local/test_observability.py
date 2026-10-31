@@ -214,6 +214,27 @@ class TestLogging:
         assert event["reply_target_reason"] == "outside_context"
         assert event["context_message_ids"] == [1, 5]
 
+    def test_agent_output_is_logged_with_count_and_credentials_redacted(self) -> None:
+        configure_logging(self.path, secrets=("test-api-key",))
+        self.root.info(
+            "AI model call completed",
+            extra={
+                "agent_output": '{"messages":[{"text":"test-api-key sk-secret"}]}',
+                "message_count": 1,
+                "tool_call_count": 0,
+            },
+        )
+        text = self.path.read_text()
+        event = json.loads(text)
+        assert event["message_count"] == 1
+        assert event["tool_call_count"] == 0
+        assert (
+            json.loads(event["agent_output"])["messages"][0]["text"]
+            == "<REDACTED> <REDACTED>"
+        )
+        assert "test-api-key" not in text
+        assert "sk-secret" not in text
+
     def test_rotation_keeps_bounded_backups_with_valid_json_lines(self) -> None:
         configure_logging(self.path, max_bytes=500, backup_count=2)
         for index in range(30):

@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
+
+from pydantic import Field
 
 ConversationKey = tuple[int, int | None]
 
@@ -69,6 +71,11 @@ class AddressingDecision:
 class Reply:
     text: str
     reply_to_message_id: int | None = None
+
+
+@dataclass(frozen=True)
+class ReplyBatch:
+    messages: Annotated[tuple[Reply, ...], Field(max_length=3)]
 
 
 @dataclass(frozen=True)

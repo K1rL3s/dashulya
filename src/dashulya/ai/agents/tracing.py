@@ -1,6 +1,7 @@
-"""Request-correlated model and tool timings without conversation payloads."""
+"""Request-correlated model output and timings, excluding inputs and tool payloads."""
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable, Sequence
 from time import perf_counter
@@ -78,6 +79,24 @@ def _outcome_fields(
     }
 
 
+def _output_fields(response: ModelResponse) -> dict[str, object]:
+    output = response.content
+    count = None
+    if output is not None:
+        try:
+            value = json.loads(output)
+        except ValueError:
+            pass
+        else:
+            if isinstance(value, dict) and isinstance(value.get("messages"), list):
+                count = len(value["messages"])
+    return {
+        "agent_output": output,
+        "message_count": count,
+        "tool_call_count": len(response.tool_calls),
+    }
+
+
 class ReplyTrace(BaseMiddleware):
     @override
     async def on_llm_call(
@@ -123,6 +142,7 @@ class ReplyTrace(BaseMiddleware):
             "AI model call completed",
             extra={
                 **_outcome_fields(started, fields, "ok"),
+                **_output_fields(response),
                 "model": response.model,
                 "prompt_tokens": response.usage.prompt_tokens,
                 "completion_tokens": response.usage.completion_tokens,

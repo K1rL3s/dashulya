@@ -25,8 +25,9 @@ from dashulya.domain.memory import (
 
 def reply_json(text: str, reply_to_message_id: int | None = None) -> str:
     return json.dumps({
-        "text": text,
-        "reply_to_message_id": reply_to_message_id,
+        "messages": [{"text": text, "reply_to_message_id": reply_to_message_id}]
+        if text.strip()
+        else [],
     })
 
 

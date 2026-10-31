@@ -31,7 +31,7 @@ from dashulya.domain.memory import (
     OriginalMessage,
     ReplyContext,
 )
-from dashulya.domain.messages import Reply, ReplyRequest
+from dashulya.domain.messages import Reply, ReplyBatch, ReplyRequest
 from dashulya.main import create_container
 from dashulya.main.config import Settings
 from dashulya.memory._recall import ScopedRecall
@@ -464,12 +464,12 @@ class TestToolMessageRoundtrip:
             ),
         )
         self.cleanup.push_async_callback(container.close)
-        agent = await container.get(Agent[Reply])
+        agent = await container.get(Agent[ReplyBatch])
         stream = MemoryStream()
         response = await agent.ask(
             "Read originals", stream=stream, dependencies={"memory_access": access}
         )
-        assert (await response.content()) == Reply("Done")
+        assert (await response.content()) == ReplyBatch((Reply("Done"),))
         error, recovered = [
             event
             for event in await stream.history.get_events()
@@ -564,7 +564,7 @@ class TestToolMessageRoundtrip:
             ),
         )
         self.cleanup.push_async_callback(container.close)
-        agent = await container.get(Agent[Reply])
+        agent = await container.get(Agent[ReplyBatch])
         sessions = [(42, MemoryStream()), (99, MemoryStream())]
         await asyncio.gather(
             *(
@@ -637,7 +637,7 @@ class TestToolMessageRoundtrip:
         )
         self.cleanup.push_async_callback(container.close)
         formatter = await container.get(MessageFormatter)
-        agent = await container.get(Agent[Reply])
+        agent = await container.get(Agent[ReplyBatch])
         stream = MemoryStream()
         await agent.ask(
             "Read sources",

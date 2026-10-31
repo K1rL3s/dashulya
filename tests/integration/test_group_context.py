@@ -22,7 +22,7 @@ from dashulya.bot.messages import conversation_key
 from dashulya.database import Database
 from dashulya.domain.groups import Group, GroupRegistry
 from dashulya.domain.memory import MemoryAccess, MemoryMessage
-from dashulya.domain.messages import Reply
+from dashulya.domain.messages import Reply, ReplyBatch
 from dashulya.main import create_container
 from dashulya.main.config import Settings
 from dashulya.memory.store import MessageStore
@@ -89,7 +89,7 @@ class TestGroupContext:
         await groups.observe(Group(CHAT["id"], CHAT["title"]))
         await groups.activate(CHAT["id"])
         self.dispatcher = await self.container.get(Dispatcher)
-        self.agent = await self.container.get(Agent[Reply])
+        self.agent = await self.container.get(Agent[ReplyBatch])
         self.ask = AsyncMock(wraps=self.agent.ask)
         patcher = patch.object(self.agent, "ask", self.ask)
         patcher.start()
@@ -306,7 +306,7 @@ class TestGroupContext:
 
     async def test_formatted_reply_records_delivered_text_with_actual_id(self) -> None:
         self.ask.return_value = SimpleNamespace(
-            content=AsyncMock(return_value=Reply("**Hello**"))
+            content=AsyncMock(return_value=ReplyBatch((Reply("**Hello**"),)))
         )
         self.ask.side_effect = None
         await self.feed(
@@ -369,7 +369,7 @@ class TestGroupContext:
 
     async def test_entity_reply_records_only_the_delivered_message(self) -> None:
         self.ask.return_value = SimpleNamespace(
-            content=AsyncMock(return_value=Reply("**Hello**"))
+            content=AsyncMock(return_value=ReplyBatch((Reply("**Hello**"),)))
         )
         self.ask.side_effect = None
 
@@ -396,7 +396,7 @@ class TestGroupContext:
 
     async def test_partial_chunk_delivery_records_only_the_delivered_chunk(self) -> None:
         self.ask.return_value = SimpleNamespace(
-            content=AsyncMock(return_value=Reply("x" * 9000))
+            content=AsyncMock(return_value=ReplyBatch((Reply("x" * 9000),)))
         )
         self.ask.side_effect = None
         sends = 0
@@ -477,7 +477,7 @@ class TestGroupContext:
         await self.feed("The message to answer", owner=False, message_thread_id=7)
         text = "x" * 9000
         self.ask.return_value = SimpleNamespace(
-            content=AsyncMock(return_value=Reply(text, 1))
+            content=AsyncMock(return_value=ReplyBatch((Reply(text, 1),)))
         )
         self.ask.side_effect = None
         await self.feed(
@@ -511,7 +511,7 @@ class TestGroupContext:
     async def test_selected_reply_target_is_preserved_in_entity_delivery(self) -> None:
         await self.feed("The message to answer", owner=False)
         self.ask.return_value = SimpleNamespace(
-            content=AsyncMock(return_value=Reply("**Answer**", 1))
+            content=AsyncMock(return_value=ReplyBatch((Reply("**Answer**", 1),)))
         )
         self.ask.side_effect = None
 
@@ -543,12 +543,62 @@ class TestGroupContext:
         assert saved[-1].text == "Answer"
         assert saved[-1].reply_to_id == 1
 
+    async def test_three_messages_are_sent_and_recorded_with_individual_targets(
+        self,
+    ) -> None:
+        earlier = await self.feed("Earlier message", owner=False)
+        self.ask.return_value = SimpleNamespace(
+            content=AsyncMock(
+                return_value=ReplyBatch((
+                    Reply("**First**", earlier.message_id),
+                    Reply("Second"),
+                    Reply("Third", 999),
+                ))
+            )
+        )
+        self.ask.side_effect = None
+        trigger = await self.feed(
+            "@dashulya_bot Hi",
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        sends = [
+            call.args[1]
+            for call in self.requests.call_args_list
+            if isinstance(call.args[1], SendMessage)
+        ]
+        assert [send.text for send in sends] == ["First", "Second", "Third"]
+        expected_targets = [earlier.message_id, trigger.message_id, trigger.message_id]
+        assert [
+            send.reply_parameters.message_id
+            for send in sends
+            if send.reply_parameters is not None
+        ] == expected_targets
+        saved = (
+            await self.store.context(
+                (-100123, None),
+                self.next_id,
+                limit=20,
+                parent_hops=5,
+            )
+        ).messages
+        delivered = [item for item in saved if item.author_id == 123]
+        assert [(item.text, item.reply_to_id) for item in delivered] == list(
+            zip(
+                ["First", "Second", "Third"],
+                expected_targets,
+                strict=True,
+            )
+        )
+        assert [item.message_id for item in delivered] == [
+            item.message_id for item in self.sent
+        ]
+
     async def test_target_outside_current_topic_defaults_to_triggering_message(
         self,
     ) -> None:
         await self.feed("Other topic", owner=False, message_thread_id=8)
         self.ask.return_value = SimpleNamespace(
-            content=AsyncMock(return_value=Reply("Answer", 1))
+            content=AsyncMock(return_value=ReplyBatch((Reply("Answer", 1),)))
         )
         self.ask.side_effect = None
         trigger = await self.feed(

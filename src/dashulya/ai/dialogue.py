@@ -15,6 +15,7 @@ from ag2.events import (
     ModelResponse,
     TextInput,
 )
+from pydantic import ValidationError
 
 from dashulya.ai.message_format import (
     MessageFormatter,
@@ -35,8 +36,10 @@ from dashulya.domain.messages import (
     ImageAttachment,
     ImageOmission,
     Reply,
+    ReplyBatch,
     ReplyRequest,
 )
+from dashulya.observability import exception_fields
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +54,7 @@ class Conversation:
 class Dialogue:
     def __init__(
         self,
-        agent: Agent[Reply],
+        agent: Agent[ReplyBatch],
         *,
         timezone: str = "Europe/Moscow",
         history: ChatHistory | None = None,
@@ -288,7 +291,7 @@ class Dialogue:
                     recent.append({"role": "assistant", "text": event.content[:1000]})
             return recent[-10:]
 
-    async def reply(self, request: ReplyRequest) -> Reply:
+    async def reply(self, request: ReplyRequest) -> ReplyBatch:
         key = request.key
         message_id = request.message_id
         images = request.images
@@ -362,38 +365,31 @@ class Dialogue:
                     variables={"user_id": request.user_id, "chat_id": key[0]},
                     dependencies={"memory_access": access, "reaction_turn": reactions},
                 )
-                result = await reply.content()
-            if result is not None and not result.text.strip() and reactions.attempted:
-                validated = Reply("")
-                target_reason = "reaction_tool_completed"
-            elif result is None or not result.text.strip():
-                validated = Reply("I couldn't generate a text reply. Please try again.")
-                target_reason = "empty_reply"
-            elif result.reply_to_message_id is None:
-                validated = Reply(result.text.strip())
-                target_reason = "default_current_request"
-            elif result.reply_to_message_id in allowed_reply_ids:
-                validated = Reply(result.text.strip(), result.reply_to_message_id)
-                target_reason = "selected"
-            else:
-                validated = Reply(result.text.strip())
-                target_reason = "outside_context"
-            if key[0] < 0:
-                logger.info(
-                    "Group reply target selected",
-                    extra={
-                        "chat_id": key[0],
-                        "message_id": message_id,
-                        "requested_reply_to_message_id": result.reply_to_message_id
-                        if result is not None
-                        else None,
-                        "reply_to_message_id": validated.reply_to_message_id
-                        or message_id,
-                        "reply_target_reason": target_reason,
-                        "context_message_ids": sorted(allowed_reply_ids),
-                    },
-                )
-            return validated
+                try:
+                    result = await reply.content()
+                except ValidationError as error:
+                    logger.warning(
+                        "AI reply validation failed",
+                        extra={
+                            "chat_id": key[0],
+                            "message_id": message_id,
+                            "validation_errors": [
+                                {"type": item["type"], "loc": item["loc"]}
+                                for item in error.errors(
+                                    include_input=False,
+                                    include_context=False,
+                                )
+                            ],
+                            **exception_fields(error),
+                        },
+                    )
+                    raise
+            return _validate_replies(
+                result,
+                request=request,
+                allowed_reply_ids=allowed_reply_ids,
+                reactions_attempted=reactions.attempted,
+            )
 
     async def clear(self, key: ConversationKey) -> None:
         conversation = self._conversations.get(key)
@@ -401,3 +397,46 @@ class Dialogue:
             # Reuse the lock so queued messages cannot continue on a discarded stream.
             async with conversation.delivery_lock, conversation.lock:
                 conversation.stream = MemoryStream()
+
+
+def _validate_replies(
+    result: ReplyBatch | None,
+    *,
+    request: ReplyRequest,
+    allowed_reply_ids: set[int],
+    reactions_attempted: bool,
+) -> ReplyBatch:
+    messages = (
+        [item for item in result.messages if item.text.strip()]
+        if result is not None
+        else []
+    )
+    if not messages:
+        if result is not None and reactions_attempted:
+            return ReplyBatch(())
+        return ReplyBatch((Reply("I couldn't generate a text reply. Please try again."),))
+    validated: list[Reply] = []
+    for item in messages:
+        if item.reply_to_message_id is None:
+            target = None
+            target_reason = "default_current_request"
+        elif item.reply_to_message_id in allowed_reply_ids:
+            target = item.reply_to_message_id
+            target_reason = "selected"
+        else:
+            target = None
+            target_reason = "outside_context"
+        validated.append(Reply(item.text.strip(), target))
+        if request.key[0] < 0:
+            logger.info(
+                "Group reply target selected",
+                extra={
+                    "chat_id": request.key[0],
+                    "message_id": request.message_id,
+                    "requested_reply_to_message_id": item.reply_to_message_id,
+                    "reply_to_message_id": target or request.message_id,
+                    "reply_target_reason": target_reason,
+                    "context_message_ids": sorted(allowed_reply_ids),
+                },
+            )
+    return ReplyBatch(tuple(validated))

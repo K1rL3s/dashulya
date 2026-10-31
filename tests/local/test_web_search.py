@@ -15,7 +15,7 @@ from ag2.tools.final.function_tool import FunctionToolSchema
 from dirty_equals import IsPartialDict
 
 from dashulya.ai.tools.web import PAGE_TEXT_CHARACTERS, SEARCH_TEXT_CHARACTERS
-from dashulya.domain.messages import Reply
+from dashulya.domain.messages import ReplyBatch
 from dashulya.main import create_container
 from dashulya.main.config import Settings
 from dashulya.observability import JsonLogFormatter
@@ -45,14 +45,14 @@ class TestWebSearch:
 
     async def agent(
         self, config: TestConfig | TrackingConfig, *, enabled: bool = True
-    ) -> Agent[Reply]:
+    ) -> Agent[ReplyBatch]:
         container = create_container(
             self.settings if enabled else replace(self.settings, keenable_api_key=""),
             MemoryOverride(),
             ModelOverrides(reply=config, decision=TestConfig("false")),
         )
         self.cleanup.push_async_callback(container.close)
-        return await container.get(Agent[Reply])
+        return await container.get(Agent[ReplyBatch])
 
     def transport(
         self,
@@ -147,7 +147,7 @@ class TestWebSearch:
             )
         reply = await response.content()
         assert reply is not None
-        assert url in reply.text
+        assert url in reply.messages[0].text
         assert [r.url.path for r in self.requests] == ["/mcp", "/mcp"]
         body = json.loads(self.requests[0].content)["params"]["arguments"]
         assert body == {

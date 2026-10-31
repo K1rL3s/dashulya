@@ -1,3 +1,4 @@
+import json
 from contextlib import AsyncExitStack, nullcontext
 from datetime import UTC, datetime
 from typing import Any
@@ -12,7 +13,8 @@ from aiogram.types import Message
 from dashulya.ai.dialogue import Dialogue
 from dashulya.bot.images import TelegramImages
 from dashulya.bot.replies import ReplyDelivery
-from dashulya.domain.messages import ImageOmission, Reply
+from dashulya.domain.messages import ImageOmission, Reply, ReplyBatch
+from dashulya.observability import JsonLogFormatter
 
 PRIVATE = {"id": 42, "type": "private", "first_name": "Anna"}
 
@@ -58,6 +60,78 @@ class TestReplyDelivery:
             if isinstance(call.args[1], SendRichMessage)
         ]
 
+    async def test_messages_keep_order_formatting_and_individual_reply_targets(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply("**First**", 10),
+            Reply("[Second](https://example.com)", 20),
+            Reply("Third"),
+        ))
+        with caplog.at_level("INFO", logger="dashulya.bot.replies"):
+            await self.message("Hi")
+        sent = self.replies()
+        assert [item.text for item in sent] == ["First", "Second", "Third"]
+        assert [
+            item.reply_parameters.message_id
+            for item in sent
+            if item.reply_parameters is not None
+        ] == [10, 20, 1]
+        assert [[e.type for e in item.entities or []] for item in sent] == [
+            ["bold"],
+            ["text_link"],
+            [],
+        ]
+        event = json.loads(JsonLogFormatter().format(caplog.records[-1]))
+        assert event["message"] == "AI reply delivered"
+        assert event["message_count"] == 3
+        assert event["chunk_count"] == 3
+
+    async def test_failure_stops_the_batch_without_resending_delivered_messages(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply("First"),
+            Reply("Second"),
+            Reply("Third"),
+        ))
+
+        async def request(bot: Bot, method: TelegramMethod[Any], **kwargs: Any) -> bool:
+            if isinstance(method, SendMessage) and method.text == "Second":
+                raise TelegramNetworkError(method, "Connection lost after sending")
+            return True
+
+        self.requests.side_effect = request
+        with pytest.raises(TelegramNetworkError):
+            await self.message("Hi")
+        assert [item.text for item in self.replies()] == ["First", "Second"]
+        event = json.loads(JsonLogFormatter().format(caplog.records[-1]))
+        assert event["message"] == "AI reply delivery failed"
+        assert event["message_count"] == 3
+        assert event["chunk_count"] == 1
+        assert event["delivery_stage"] == "send"
+
+    async def test_render_failure_is_logged_before_any_send(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        self.dialogue.reply.return_value = ReplyBatch((Reply("First"),))
+        with (
+            patch(
+                "dashulya.bot.replies.render_markdown", side_effect=ValueError("PRIVATE")
+            ),
+            pytest.raises(ValueError, match=r"^PRIVATE$"),
+        ):
+            await self.message("Hi")
+        assert self.replies() == []
+        event = json.loads(JsonLogFormatter().format(caplog.records[-1]))
+        assert event["message"] == "AI reply delivery failed"
+        assert event["delivery_stage"] == "render"
+        assert event["chunk_count"] == 0
+        assert "PRIVATE" not in json.dumps(event)
+
     async def test_failed_image_download_still_reaches_the_reply_agent(self) -> None:
         incoming = Message.model_validate({
             "message_id": 1,
@@ -69,9 +143,9 @@ class TestReplyDelivery:
                 {"file_id": "photo", "file_unique_id": "unique", "width": 2, "height": 2}
             ],
         }).as_(self.bot)
-        self.dialogue.reply.return_value = Reply(
-            "I couldn't load the picture. Please resend it."
-        )
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply("I couldn't load the picture. Please resend it."),
+        ))
         with patch.object(self.bot, "get_file", AsyncMock(side_effect=TimeoutError)):
             await self.delivery.reply(incoming)
         request = self.dialogue.reply.await_args.args[0]
@@ -85,10 +159,12 @@ class TestReplyDelivery:
         self,
     ) -> None:
         link_label = "Обсуждение"
-        self.dialogue.reply.return_value = Reply(
-            "Вчера обсуждали **Codex и Claude** 😄\n\n"
-            f"[{link_label}](https://t.me/fastnewsdev_chat/19008)"
-        )
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply(
+                "Вчера обсуждали **Codex и Claude** 😄\n\n"
+                f"[{link_label}](https://t.me/fastnewsdev_chat/19008)"
+            ),
+        ))
         await self.message("Что обсуждали?")
         reply = self.replies()[-1]
         assert reply.text == f"Вчера обсуждали Codex и Claude 😄\n\n{link_label}"
@@ -100,7 +176,7 @@ class TestReplyDelivery:
 
     async def test_tables_use_monospace_entities(self) -> None:
         text = "## Models\n\n| Model | Cost |\n| --- | --- |\n| Luna | Low |\n\n**More information**"
-        self.dialogue.reply.return_value = Reply(text)
+        self.dialogue.reply.return_value = ReplyBatch((Reply(text),))
         await self.message("Compare models")
         assert self.rich_replies() == []
         reply = self.replies()[-1]
@@ -115,9 +191,9 @@ class TestReplyDelivery:
             return True
 
         self.requests.side_effect = request
-        self.dialogue.reply.return_value = Reply(
-            "**Codex** [source](https://example.com)"
-        )
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply("**Codex** [source](https://example.com)"),
+        ))
         with pytest.raises(TelegramBadRequest):
             await self.message("Hi")
         assert self.rich_replies() == []
@@ -133,7 +209,7 @@ class TestReplyDelivery:
             return True
 
         self.requests.side_effect = request
-        self.dialogue.reply.return_value = Reply("**Codex**")
+        self.dialogue.reply.return_value = ReplyBatch((Reply("**Codex**"),))
         with pytest.raises(TelegramNetworkError):
             await self.message("Hi")
         assert self.rich_replies() == []
@@ -141,7 +217,7 @@ class TestReplyDelivery:
 
     async def test_long_answer_keeps_formatting_in_text_chunks(self) -> None:
         text = "a" * 33000
-        self.dialogue.reply.return_value = Reply(f"**{text}**")
+        self.dialogue.reply.return_value = ReplyBatch((Reply(f"**{text}**"),))
         await self.message("Long answer")
         assert self.rich_replies() == []
         assert "".join(reply.text for reply in self.replies()) == text
@@ -149,9 +225,9 @@ class TestReplyDelivery:
             assert [entity.type for entity in reply.entities or []] == ["bold"]
 
     async def test_formatted_paragraphs_use_entities_without_implicit_bold(self) -> None:
-        self.dialogue.reply.return_value = Reply(
-            "Summary: *one note*.\n\nOrdinary text. [Source](https://example.com)"
-        )
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply("Summary: *one note*.\n\nOrdinary text. [Source](https://example.com)"),
+        ))
         await self.message("Question")
         sent = [*self.replies(), *self.rich_replies()]
         assert len(sent) == 1
@@ -163,10 +239,12 @@ class TestReplyDelivery:
     async def test_literal_bullet_lines_preserve_links_and_emphasis_in_delivery(
         self,
     ) -> None:
-        self.dialogue.reply.return_value = Reply(
-            "Summary:\n\n• **First:** original. [Source](https://example.com/1)\n"
-            "• **Second:** reply 😀. [Source](https://example.com/2)"
-        )
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply(
+                "Summary:\n\n• **First:** original. [Source](https://example.com/1)\n"
+                "• **Second:** reply 😀. [Source](https://example.com/2)"
+            ),
+        ))
         await self.message("Summarize today")
         messages = self.replies()
         assert len(messages) == 1

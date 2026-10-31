@@ -9,10 +9,12 @@ from ag2 import MemoryStream
 from ag2.config.openai.mappers import events_to_responses_input
 from ag2.context import ConversationContext
 from ag2.events import (
+    ModelMessage,
     ModelRequest,
     ModelResponse,
     TextInput,
     ToolCallEvent,
+    ToolCallsEvent,
     ToolErrorEvent,
     ToolResult,
     ToolResultEvent,
@@ -72,6 +74,54 @@ class TestAgentTracing:
             outcome="ok",
         )
         assert "PRIVATE REQUEST" not in str(event)
+
+    @pytest.mark.parametrize(
+        ("output", "count"),
+        [
+            ('{"messages":[{"text":"First"},{"text":"Second"}]}', 2),
+            ('{"messages":[]}', 0),
+            ('{"messages":null}', None),
+            ('{"other":"value"}', None),
+            ("[]", None),
+            ("broken JSON", None),
+        ],
+    )
+    async def test_raw_output_and_count_survive_json_log_formatting(
+        self,
+        output: str,
+        count: int | None,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with caplog.at_level("INFO", logger="dashulya.ai.agents.tracing"):
+            await self.trace.on_llm_call(
+                AsyncMock(return_value=ModelResponse(ModelMessage(output))),
+                [self.event],
+                self.context,
+            )
+        event = json.loads(JsonLogFormatter().format(caplog.records[-1]))
+        assert event["agent_output"] == output
+        assert event["message_count"] == count
+        assert event["tool_call_count"] == 0
+        assert "PRIVATE REQUEST" not in json.dumps(event)
+
+    async def test_tool_call_is_distinguished_from_output_without_logging_arguments(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        response = ModelResponse(
+            tool_calls=ToolCallsEvent([
+                ToolCallEvent("search_memory", arguments='{"query":"PRIVATE QUERY"}'),
+            ])
+        )
+        with caplog.at_level("INFO", logger="dashulya.ai.agents.tracing"):
+            await self.trace.on_llm_call(
+                AsyncMock(return_value=response), [self.event], self.context
+            )
+        event = json.loads(JsonLogFormatter().format(caplog.records[-1]))
+        assert event["agent_output"] is None
+        assert event["message_count"] is None
+        assert event["tool_call_count"] == 1
+        assert "PRIVATE QUERY" not in json.dumps(event)
 
     async def test_success_and_tool_error_keep_same_call_id_without_arguments_or_result(
         self,

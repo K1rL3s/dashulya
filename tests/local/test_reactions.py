@@ -34,7 +34,7 @@ from dashulya.ai.tools.reactions import ReactionTurn
 from dashulya.bot.chat_actions import typing
 from dashulya.bot.reactions import TelegramReactions
 from dashulya.bot.replies import ReplyDelivery
-from dashulya.domain.messages import Reply, ReplyRequest
+from dashulya.domain.messages import ReplyBatch, ReplyRequest
 from dashulya.domain.reactions import ReactionResult
 from dashulya.main import create_container
 from dashulya.main.config import Settings
@@ -71,7 +71,7 @@ class TestReaction:
 
     async def dialogue(
         self, *turns: Turn
-    ) -> tuple[Dialogue, TrackingConfig, Agent[Reply]]:
+    ) -> tuple[Dialogue, TrackingConfig, Agent[ReplyBatch]]:
         config = TrackingConfig(TestConfig(*turns))
         container = create_container(
             Settings(bot_token="123:TEST", openai_api_key=TEST_API_KEY, owner_user_id=42),
@@ -80,9 +80,13 @@ class TestReaction:
             ModelOverrides(reply=config, decision=TestConfig("false")),
         )
         self.cleanup.push_async_callback(container.close)
-        return await container.get(Dialogue), config, await container.get(Agent[Reply])
+        return (
+            await container.get(Dialogue),
+            config,
+            await container.get(Agent[ReplyBatch]),
+        )
 
-    async def reply(self, dialogue: Dialogue, chat_id: int = -123) -> Reply:
+    async def reply(self, dialogue: Dialogue, chat_id: int = -123) -> ReplyBatch:
         return await dialogue.reply(
             ReplyRequest(
                 (chat_id, None),
@@ -411,7 +415,7 @@ class TestReaction:
         results = await asyncio.gather(
             self.reply(dialogue, -123), self.reply(dialogue, -456)
         )
-        assert list(results) == [Reply(""), Reply("")]
+        assert list(results) == [ReplyBatch(()), ReplyBatch(())]
         assert {(method.chat_id, method.message_id) for method in self.reactions()} == {
             (-123, 765432),
             (-456, 765432),
@@ -481,7 +485,7 @@ class TestReaction:
             or record.name.startswith("dashulya.bot.reactions.")
             for record in caplog.records
         )
-        assert result == Reply("")
+        assert result == ReplyBatch(())
         stream = ask.call_args.kwargs["stream"]
         results = [
             event
@@ -600,7 +604,7 @@ class TestReaction:
             or record.name.startswith("dashulya.bot.reactions.")
             for record in caplog.records
         )
-        assert result == Reply("")
+        assert result == ReplyBatch(())
         assert len(self.reactions()) == 1
         stream = ask.call_args.kwargs["stream"]
         results = [
@@ -731,11 +735,11 @@ class TestReaction:
 
     async def test_turn_state_does_not_leak_to_a_later_empty_response(self) -> None:
         dialogue, _, agent = await self.dialogue(react(1), reply_json(""))
-        assert await self.reply(dialogue, 42) == Reply("")
+        assert await self.reply(dialogue, 42) == ReplyBatch(())
         with patch.object(agent, "ask", AsyncMock()) as ask:
-            ask.return_value.content.return_value = Reply("")
+            ask.return_value.content.return_value = ReplyBatch(())
             result = await self.reply(dialogue, 42)
-        assert "couldn't generate" in result.text
+        assert "couldn't generate" in result.messages[0].text
 
     async def test_invalid_ids_and_empty_emoji_are_rejected_without_a_request(
         self,

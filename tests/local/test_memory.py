@@ -12,7 +12,7 @@ from ag2.events import TextInput, ToolCallEvent, ToolResultEvent
 from ag2.testing import TestConfig, TrackingConfig
 
 from dashulya.domain.memory import MemoryAccess
-from dashulya.domain.messages import Reply
+from dashulya.domain.messages import ReplyBatch
 from dashulya.main import create_container
 from dashulya.main.config import Settings
 from dashulya.memory.index import build_memory
@@ -249,7 +249,7 @@ class TestMemory:
             ModelOverrides(reply=config, decision=TestConfig("false")),
         )
         self.cleanup.push_async_callback(container.close)
-        agent = await container.get(Agent[Reply])
+        agent = await container.get(Agent[ReplyBatch])
         stream = MemoryStream()
         reply = await (
             await agent.ask(
@@ -259,7 +259,7 @@ class TestMemory:
             )
         ).content()
         assert reply is not None
-        assert "PostgreSQL" in reply.text
+        assert "PostgreSQL" in reply.messages[0].text
         events = await stream.history.get_events()
         results = [event for event in events if isinstance(event, ToolResultEvent)]
         assert len(results) == 1

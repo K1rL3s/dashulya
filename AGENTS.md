@@ -13,6 +13,13 @@ Run commands from the project root. Environment settings and validation live in
 The bot reads `.env` from the current directory; existing environment variables
 take precedence.
 
+The local Compose setup bind-mounts `./src` at `/app/src`. For Python-only
+changes, reload the agent with `docker compose restart agent` without rebuilding
+the image. Rebuild when dependencies or the Dockerfile change. Before reloading,
+check the running container's source mount: an existing Compose override may
+point it at an older release snapshot. Use the current working tree for the
+local stand and verify container health after reloading.
+
 Use the [justfile](justfile) recipes for development checks. `just --list` lists
 individual checks and the formatting command; run the full suite for Python changes:
 
@@ -91,9 +98,10 @@ overrides, and resource lifetimes. [GLOSSARY.md](GLOSSARY.md) defines domain ter
   exact source text. Keep later author observations out of the earlier prefix.
   Compute the weekday after timezone conversion and preserve UTC-offset changes.
   Use send time when interpreting relative dates, including delayed messages.
-- **Replies:** the reply agent returns structured text and an optional message ID.
+- **Replies:** the reply agent returns up to three ordered messages, each with
+  structured text and an optional message ID; reaction-only turns use an empty list.
   Accept a group reply target only from that request's selected context; otherwise
-  use the triggering message, as in private chats. All chunks use the same target.
+  use the triggering message, as in private chats. Each message's chunks share its target.
   Render Markdown into ordinary Telegram messages with explicit entities using
   the slop-writer-based renderer in `bot/formatting.py`. Preserve formatting and
   UTF-16 offsets when chunking; tables become monospace blocks. Keep one send

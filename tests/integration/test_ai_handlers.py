@@ -15,7 +15,7 @@ from aiogram.types import File, Message, Update, User
 from dashulya.database import Database
 from dashulya.domain.groups import Group
 from dashulya.domain.memory import MessageRecorder
-from dashulya.domain.messages import ImageOmission, Reply, ReplyRequest
+from dashulya.domain.messages import ImageOmission, Reply, ReplyBatch, ReplyRequest
 from dashulya.main import create_container
 from dashulya.main.config import Settings
 from dashulya.observability import JsonLogFormatter
@@ -73,7 +73,7 @@ class _AIHandlerFixture:
         self.cleanup.callback(request_patch.stop)
         self.dialogue = AsyncMock()
         self.dialogue.delivery = MagicMock(return_value=nullcontext())
-        self.dialogue.reply.return_value = Reply("Hello <Anna> 💋")
+        self.dialogue.reply.return_value = ReplyBatch((Reply("Hello <Anna> 💋"),))
         self.dialogue.recent_context.return_value = []
         self.decision_agent = AsyncMock(spec=Agent)
         self.decision_agent.ask.return_value.content = AsyncMock(return_value=False)

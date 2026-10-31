@@ -25,6 +25,7 @@ from evals.suites.memory.runtime import (
     database_url,
 )
 from evals.suites.memory.scoring import (
+    answer_text,
     canonical_count_matches,
     objective_scorer,
     semantic_scorer,
@@ -149,7 +150,13 @@ async def grade(
             ModelResponse(
                 message=ModelMessage(
                     content=json.dumps({
-                        "text": f"Alice uses Alpha. https://t.me/synthetic/{citation}",
+                        "messages": [
+                            {"text": "Alice uses Alpha.", "reply_to_message_id": None},
+                            {
+                                "text": f"https://t.me/synthetic/{citation}",
+                                "reply_to_message_id": None,
+                            },
+                        ],
                     })
                 )
             ),
@@ -163,6 +170,19 @@ async def grade(
         store_dir=tmp_path,
         scorers=[objective_scorer({"A": {7, 8}}, {"A": set()})],
     )
+
+
+@pytest.mark.parametrize("field", ["content", "body"])
+def test_answer_text_reads_all_messages_and_preserves_legacy_runs(field: str) -> None:
+    for value, expected in (
+        ({"messages": [{"text": "First"}, {"text": "Second"}]}, "First\n\nSecond"),
+        ({"messages": []}, ""),
+        ({"text": "Saved answer"}, "Saved answer"),
+    ):
+        outputs: dict[str, object] = {
+            field: json.dumps(value) if field == "body" else value
+        }
+        assert answer_text(outputs) == expected
 
 
 async def test_real_ag2_eval_records_citation_and_and_or_support_failures(
@@ -214,8 +234,8 @@ async def test_capture_uses_injected_production_tool_and_fresh_stream(
         agent = create_reply_agent(
             TestConfig(
                 ToolCallEvent("chat_history", arguments='{"action":"count"}'),
-                '{"text":"One saved message.","reply_to_message_id":null}',
-                '{"text":"Fresh answer.","reply_to_message_id":null}',
+                '{"messages":[{"text":"One saved message.","reply_to_message_id":null}]}',
+                '{"messages":[{"text":"Fresh answer.","reply_to_message_id":null}]}',
             ),
             tools=[chat_history],
             middleware=[Middleware(DishkaAsyncMiddleware, container=container)],
