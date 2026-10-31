@@ -11,6 +11,10 @@ from dashulya.domain.messages import (
 )
 
 
+class MemoryInputError(ValueError):
+    """A fixed, model-safe explanation of invalid memory call arguments."""
+
+
 def message_source_id(collection: str, message_id: int) -> str:
     key = hashlib.sha256(collection.encode()).hexdigest()[:24]
     return f"source:{key}:{message_id}"
@@ -213,11 +217,12 @@ class ChatMemoryService(Protocol):
 
 
 class ContextImages(Protocol):
-    """Resolve saved visual inputs from the exact selected reply context."""
+    """Resolve selected visual inputs, prioritizing the request and its parent."""
 
     async def load_context(
         self,
         messages: tuple[MemoryMessage, ...],
         *,
         images: tuple[ImageAttachment | ImageOmission, ...] = (),
+        request_message_id: int | None = None,
     ) -> tuple[ImageAttachment | ImageOmission, ...]: ...

@@ -18,6 +18,7 @@ from dashulya.domain.memory import MessageRecorder
 from dashulya.domain.messages import ImageOmission, Reply, ReplyRequest
 from dashulya.main import create_container
 from dashulya.main.config import Settings
+from dashulya.observability import JsonLogFormatter
 from dashulya.storage.groups import GroupStore
 from tests.support import (
     TEST_API_KEY,
@@ -568,7 +569,9 @@ class TestAIHandler(_AIHandlerFixture):
         self.download.assert_not_called()
         self.dialogue.reply.assert_not_awaited()
 
-    async def test_text_request_can_inspect_its_reply_image(self) -> None:
+    async def test_group_reply_image_is_captured_for_selected_context_loading(
+        self,
+    ) -> None:
         await self.message(
             "@dashulya_bot explain",
             chat=GROUP,
@@ -581,9 +584,17 @@ class TestAIHandler(_AIHandlerFixture):
                 "photo": PHOTO,
             },
         )
-        images = self.dialogue.reply.call_args.args[0].images
-        assert images[0].message_id == 100
-        assert images[0].data == PNG
+        request = self.dialogue.reply.call_args.args[0]
+        assert request.images == ()
+        assert request.reply_to_id == 100
+        (parent,) = [
+            call.args[0]
+            for call in self.recorder.record.await_args_list
+            if call.args[0].message_id == 100
+        ]
+        assert parent.image_file is not None
+        assert parent.image_file.file_id == "photo"
+        self.get_file.assert_not_awaited()
 
     async def test_oversized_image_reaches_agent_as_omission_without_download(
         self,
@@ -599,15 +610,20 @@ class TestAIHandler(_AIHandlerFixture):
     ) -> None:
         self.get_file.side_effect = RuntimeError(self.bot.token)
         caplog.clear()
-        with caplog.at_level("WARNING", logger="dashulya.bot.replies"):
+        with caplog.at_level("WARNING", logger="dashulya.bot.images"):
             await self.message(photo=PHOTO)
         assert any(
-            record.name == "dashulya.bot.replies"
-            or record.name.startswith("dashulya.bot.replies.")
+            record.name == "dashulya.bot.images"
+            or record.name.startswith("dashulya.bot.images.")
             for record in caplog.records
         )
-        self.dialogue.reply.assert_not_awaited()
-        assert self.bot.token not in str(caplog.messages)
+        self.dialogue.reply.assert_awaited_once()
+        assert self.dialogue.reply.call_args.args[0].images == (
+            ImageOmission(1, "unavailable"),
+        )
+        assert self.bot.token not in " ".join(
+            JsonLogFormatter().format(record) for record in caplog.records
+        )
         assert self.bot.token not in self.replies()[-1].text
 
     async def test_stickers_of_every_format_invoke_private_reply(self) -> None:
@@ -686,12 +702,23 @@ class TestAIHandler(_AIHandlerFixture):
             },
         )
         assert self.dialogue.reply.await_count == 2
-        assert self.dialogue.reply.call_args.args[0].images[0].message_id == 101
-        assert self.get_file.await_args_list[-1].args == ("thumbnail",)
+        request = self.dialogue.reply.call_args.args[0]
+        assert request.images == ()
+        assert request.reply_to_id == 101
+        (parent,) = [
+            call.args[0]
+            for call in self.recorder.record.await_args_list
+            if call.args[0].message_id == 101
+        ]
+        assert parent.image_file is not None
+        assert parent.image_file.preview_kind == "sticker"
+        assert parent.image_file.thumbnail_file_id == "thumbnail"
+        self.get_file.assert_not_awaited()
 
     async def test_private_and_caption_addressed_gif_use_animation_previews(self) -> None:
         await self.message(animation=ANIMATION)
         assert self.dialogue.reply.call_args.args[0].images[0].preview_kind == "animation"
+        self.get_file.reset_mock()
         await self.message(
             chat=GROUP,
             animation=ANIMATION,
@@ -700,7 +727,8 @@ class TestAIHandler(_AIHandlerFixture):
         )
         assert self.dialogue.reply.await_count == 2
         self.decision_agent.ask.assert_not_awaited()
-        assert self.get_file.await_args_list[-1].args == ("thumbnail",)
+        assert self.dialogue.reply.call_args.args[0].images == ()
+        self.get_file.assert_not_awaited()
 
     async def test_unaddressed_and_outsider_gifs_never_download(self) -> None:
         await self.message(animation=ANIMATION, sender={**USER, "id": 43})
@@ -724,7 +752,17 @@ class TestAIHandler(_AIHandlerFixture):
                 "animation": ANIMATION,
             },
         )
-        assert self.dialogue.reply.call_args.args[0].images[0].message_id == 100
+        request = self.dialogue.reply.call_args.args[0]
+        assert request.images == ()
+        assert request.reply_to_id == 100
+        (parent,) = [
+            call.args[0]
+            for call in self.recorder.record.await_args_list
+            if call.args[0].message_id == 100
+        ]
+        assert parent.image_file is not None
+        assert parent.image_file.preview_kind == "animation"
+        self.get_file.assert_not_awaited()
         self.get_file.reset_mock()
         await self.message(animation={**ANIMATION, "thumbnail": None})
         self.get_file.assert_awaited_once_with("animation")

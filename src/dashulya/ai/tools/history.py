@@ -51,6 +51,8 @@ async def chat_history(
     primary matches, counts and pagination remain independent. Ancestors may have
     other authors/dates. For truncated_thread navigation, read boundary_source_id with
     parent_hops=remaining_hops to retrieve the omitted chain; null means unknown.
+    Failures return an error string, not an empty result. Correct invalid arguments;
+    an unavailable history lookup cannot establish absence or an exact count.
     """
     result = await history.query(
         action,

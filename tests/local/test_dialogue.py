@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, cast
@@ -11,7 +12,7 @@ from ag2.agent import AgentReply
 from ag2.events import BinaryInput, ModelRequest, ModelResponse, TextInput
 from ag2.testing import TestConfig, TrackingConfig
 from aiogram import Bot
-from aiogram.types import Message
+from aiogram.types import File, Message
 
 from dashulya.ai.agents.factory import create_reply_agent
 from dashulya.ai.dialogue import Dialogue
@@ -22,6 +23,7 @@ from dashulya.domain.memory import ChatHistory, MemoryBackend, MemoryMessage, Re
 from dashulya.domain.messages import (
     ConversationKey,
     ImageAttachment,
+    ImageFile,
     ImageOmission,
     Reply,
     ReplyRequest,
@@ -717,14 +719,28 @@ class TestDialogue:
         self.history.context.return_value = ReplyContext(
             tuple(call.args[0] for call in recorder.record.call_args_list)
         )
-        bot = AsyncMock(spec=Bot)
+        bot = Bot("123:TEST")
+        self.cleanup.push_async_callback(bot.session.close)
         images = TelegramImages(bot, max_bytes=20_000_000)
         dialogue = Dialogue(
             self.agent, history=self.history, bot_id=123, context_images=images
         )
         png = b"\x89PNG\r\n\x1a\nimage-data"
+
+        async def stream(*args: Any, **kwargs: Any) -> AsyncGenerator[bytes]:
+            yield png
+
         with (
-            patch.object(images, "_read", AsyncMock(return_value=png)) as download,
+            patch.object(
+                bot,
+                "get_file",
+                AsyncMock(
+                    return_value=File(
+                        file_id="photo", file_unique_id="unique", file_path="image.png"
+                    )
+                ),
+            ) as download,
+            patch.object(bot.session, "stream_content", stream),
             patch.object(Message, "answer", AsyncMock()),
             patch("dashulya.bot.images.first_frame", return_value=b"frame"),
         ):
@@ -740,7 +756,7 @@ class TestDialogue:
         ]
         download.assert_awaited_once()
         assert download.await_args is not None
-        assert download.await_args.args[0].file_id == expected_id
+        assert download.await_args.args[0] == expected_id
         if animation:
             assert "first frame" in "\n".join(await self.requests(self.last_stream()))
 
@@ -758,6 +774,89 @@ class TestDialogue:
                 )
             )
         self.ask.assert_not_awaited()
+
+    async def test_group_current_and_historical_images_use_one_selected_batch(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        png = b"\x89PNG\r\n\x1a\nimage-data"
+        incoming = Message.model_validate({
+            "message_id": 2,
+            "date": SENT_AT,
+            "chat": {"id": -123, "type": "supergroup", "title": "Group"},
+            "from": {"id": 42, "is_bot": False, "first_name": "Anna"},
+            "caption": "Compare the pictures",
+            "photo": [
+                {
+                    "file_id": "current",
+                    "file_unique_id": "current",
+                    "width": 2,
+                    "height": 2,
+                }
+            ],
+        })
+        self.history.context.return_value = ReplyContext(
+            tuple(
+                MemoryMessage(
+                    -123,
+                    number,
+                    "",
+                    SENT_AT,
+                    42,
+                    "Anna",
+                    "Group",
+                    media_type="photo",
+                    image_file=ImageFile(file_id),
+                )
+                for number, file_id in [(1, "older"), (2, "current")]
+            )
+        )
+        bot = Bot("123:TEST")
+        self.cleanup.push_async_callback(bot.session.close)
+        images = TelegramImages(bot, max_bytes=20_000_000)
+        dialogue = Dialogue(
+            self.agent, history=self.history, bot_id=123, context_images=images
+        )
+
+        async def stream(*args: Any, **kwargs: Any) -> AsyncGenerator[bytes]:
+            yield png
+
+        with (
+            caplog.at_level("INFO", logger="dashulya.bot.images"),
+            patch.object(images, "load", wraps=images.load) as eager,
+            patch.object(
+                bot,
+                "get_file",
+                AsyncMock(
+                    return_value=File(
+                        file_id="photo",
+                        file_unique_id="unique",
+                        file_path="image.png",
+                        file_size=len(png),
+                    )
+                ),
+            ) as metadata,
+            patch.object(bot.session, "stream_content", stream),
+            patch.object(Message, "answer", AsyncMock()),
+        ):
+            await ReplyDelivery(bot, dialogue, images).reply(incoming)
+        eager.assert_not_called()
+        assert [call.args[0] for call in metadata.await_args_list] == ["current", "older"]
+        binary = [
+            part.data
+            for event in await self.last_stream().history.get_events()
+            if isinstance(event, ModelRequest)
+            for part in event.parts
+            if isinstance(part, BinaryInput)
+        ]
+        assert binary == [png, png]
+        (batch,) = [
+            record
+            for record in caplog.records
+            if record.message == "Media batch completed"
+        ]
+        assert getattr(batch, "media_phase", None) == "context"
+        assert getattr(batch, "request_message_id", None) == 2
+        assert getattr(batch, "loaded_images", None) == 2
 
     async def test_omitted_image_is_an_explicit_model_note_with_no_binary_input(
         self,

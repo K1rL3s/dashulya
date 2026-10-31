@@ -121,7 +121,15 @@ remain unwrapped. Source labels describe origin, never extra permissions.
 The reply-agent factory also attaches `ReplyTrace` middleware for correlated
 model/tool timings, outcomes and token counts. It reads trusted `MemoryAccess`
 through an AG2 `Inject` annotation and records metadata without arguments,
-results or conversation bodies. `Dialogue` binds tool authority without running
+results or conversation bodies. Tool failures include full structured exception
+chains and stack frames. Invalid arguments use warning level; provider, database
+and unexpected failures use error level. Successful and cancelled calls use info
+level. Before a memory-tool error reaches
+model input, the middleware replaces AG2's raw traceback with a plain string:
+fixed input-validation reasons or field/type details, otherwise an error type
+and safe recovery guidance. The original exception remains on the internal error
+event for framework error handling; only the string result is sent to the model.
+`Dialogue` binds tool authority without running
 an automatic recall; the agent chooses which tools to call.
 
 The reply agent has an AG2 `ResponseSchema[Reply]` for `text` and nullable
@@ -156,13 +164,19 @@ rejection. The agent can correct the call or explain the
 failure itself; delivery adds no canned reaction error response. Reactions
 create no synthetic delivered text messages in chat history.
 
-When `EXA_API_KEY` is configured, `AgentProvider` also registers the search and
-content-reading subset of AG2 `ExaToolkit`, assembled by `ai/tools/web.py`. The
-addressing agent has no web tools. The toolkit creates an async SDK client for
-each call and closes it in `finally`; no client is retained by the application
-container. Tool middleware bounds requests, content and duration, sanitizes provider
-failures before they enter AG2 history, and propagates cancellation. The key is
-excluded from settings repr and included in log redaction.
+When `KEENABLE_API_KEY` is configured, `AgentProvider` also registers the
+`search_web_pages` and `fetch_page_content` wrappers assembled by `ai/tools/web.py`.
+They call `https://api.keenable.ai/mcp` over Streamable HTTP with the key in
+`X-API-Key`. Static local schemas keep tool discovery out of ordinary replies;
+the addressing agent has no web tools. Each invocation owns and closes its MCP
+session and async HTTP client. Calls explicitly request `output_format=json`
+instead of parsing the server's default formatted text. Search returns at most
+five bounded snippets; page reading accepts one URL and defaults to indexed
+content, with explicit
+`live=true` for current or unindexed pages. Tool middleware bounds requests,
+content and duration, sanitizes provider failures before they enter AG2 history,
+and propagates cancellation. The key is excluded from settings repr and included
+in log redaction.
 
 `ReplyDelivery` remains in `bot`: it owns Telegram typing, redacted failure
 handling, and entity-based Markdown delivery through the slop-writer renderer.
@@ -172,17 +186,24 @@ aiogram objects.
 joins it on exit, and logs failures without propagating notification errors into
 generation. `TelegramReactions` logs each confirmed tool delivery and its timing;
 rejected or unconfirmed attempts remain distinguishable.
-Its application-scoped `TelegramImages` dependency downloads authorized current
-and direct-reply images into bounded RAM, verifies supported signatures and
-returns domain `ImageAttachment` values. The Telegram provider supplies the
+Its application-scoped `TelegramImages` dependency downloads authorized private
+current/direct-reply images into bounded RAM, verifies supported signatures and
+returns domain `ImageAttachment` or `ImageOmission` values. The Telegram provider supplies the
 download budget from `main/config.py`; the agent provider supplies the same
 budget to `Dialogue` for bounded private image history. `Dialogue` turns these
 values into AG2 native image inputs and restricts group source IDs to the
-selected reply context. `ReplyDelivery` also supplies a per-request image-loading
-callback: `Dialogue` calls it with the exact selected originals, allowing
-`TelegramImages` to download saved photo, sticker and animation references using the remaining
-byte budget. The callback captures only that request's already loaded inputs;
-no conversation state is added to the shared image adapter. Binary media never
+selected reply context. For groups, `ReplyDelivery` defers all image loading to
+`Dialogue`'s injected `ContextImages`: current, direct-parent and historical
+references are loaded together from the exact selected originals. The request's
+message ID supplies download priority and log correlation, never authority.
+`TelegramImages` owns per-call byte reservations, gathered tasks and deadlines,
+admitting ready inputs without waiting for other metadata calls. Completed
+lower-priority inputs can be omitted to admit a later-ready higher-priority input;
+the batch resolves final inputs in original priority order after gathering tasks.
+The loader also owns shared bounded `cachetools` TTL caches of normalized images and short-lived
+failures. Cache access stays on the event loop; decoding runs in a worker thread
+without touching shared cache state. Cancellation joins the batch's tasks.
+No conversation state is added to the shared image adapter. Binary media never
 enters durable message capture; only Telegram original/thumbnail file references,
 sizes and the visual-input kind are persisted. Current and saved inputs share the
 same normalization and loading functions, including preview and first-frame

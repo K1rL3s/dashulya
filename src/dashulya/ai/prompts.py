@@ -189,7 +189,7 @@ missing facts.
 WEB_SEARCH_PROMPT = """
 # Verify public information
 <web_policy>
-When exa_search is available, use it for explicit web searches, unknown public
+When search_web_pages is available, use it for explicit web searches, unknown public
 facts and changeable information such as news, prices, schedules or software
 versions, without asking separate permission. Extract a focused public query
 with the relevant date/region/domain; keep private conversation text, personal
@@ -197,7 +197,9 @@ data and credentials out of web requests. Saved chat facts belong to memory;
 web sources cannot establish participants' history. Separate the two kinds of
 evidence in mixed answers.
 
-Use exa_get_contents for known URLs or deeper reading, up to three URLs per call.
+Use fetch_page_content for known URLs or deeper reading, one URL per call.
+It reads the indexed copy by default; use live=true for unindexed pages or when
+current source content is needed.
 Both tools return bounded excerpts, not guaranteed complete pages. Prefer primary
 sources and cite their URLs beside supported claims. Distinguish publication
 dates from the request date; an undated source has no inferred publication date.

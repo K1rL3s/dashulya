@@ -1,7 +1,10 @@
 # Evaluations
 
 Version reusable runners, input contracts and scoring rules under `suites/`.
-There are currently no versioned evaluation suites.
+The [memory suite](suites/memory/README.md) adapts source-backed chat questions to
+AG2 Evals, with offline validation/export, production memory tools, trace checks
+and a provisional semantic judge. Its `run` command is explicitly separate from
+preparation and development checks.
 
 `datasets/` is entirely local and ignored, including dataset descriptions,
 manifests, preparation scripts, cases and annotations. `runs/` contains generated

@@ -31,6 +31,8 @@ async def search_memory(
     limit is 1-8. hits distinguish primary sources from supporting reply/nearby
     context, which may have other authors/dates inside the authorized snapshot.
     Check coverage and pending blocks. Read full sources with chat_history(read).
+    Failures return an error string, not an empty result. Correct invalid arguments;
+    for an unavailable recall backend, try chat_history for canonical originals.
     """
     result = await memory.search(
         query,

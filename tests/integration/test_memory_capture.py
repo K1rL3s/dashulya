@@ -1,5 +1,7 @@
 """Owner private capture and canonical identity regression coverage."""
 
+from collections.abc import AsyncGenerator
+from contextlib import AsyncExitStack
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
@@ -7,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from aiogram import Bot
-from aiogram.types import Message, Update
+from aiogram.types import File, Message, Update
 
 from dashulya.bot.images import TelegramImages
 from dashulya.bot.messages import capture_message
@@ -60,7 +62,7 @@ class TestMemoryCapture:
         )
 
     async def test_sticker_and_animation_references_reload_after_restart(
-        self, subtests: pytest.Subtests
+        self, subtests: pytest.Subtests, cleanup: AsyncExitStack
     ) -> None:
         thumbnail = {
             "file_id": "thumbnail",
@@ -118,10 +120,16 @@ class TestMemoryCapture:
             ),
         )
         store = MessageStore(self.database)
-        loader = TelegramImages(AsyncMock(spec=Bot), max_bytes=100_000)
+        bot = Bot("123:TEST")
+        cleanup.push_async_callback(bot.session.close)
         png = b"\x89PNG\r\n\x1a\nimage-data"
+
+        async def stream(*args: Any, **kwargs: Any) -> AsyncGenerator[bytes]:
+            yield png
+
         for number, (fields, expected_file, kind) in enumerate(cases, start=1):
             with subtests.test(fields=fields):
+                loader = TelegramImages(bot, max_bytes=100_000)
                 await capture_message(
                     store,
                     Message.model_validate({
@@ -143,8 +151,17 @@ class TestMemoryCapture:
                     assert reference.thumbnail_file_size == 16
                 with (
                     patch.object(
-                        loader, "_read", AsyncMock(return_value=png)
+                        bot,
+                        "get_file",
+                        AsyncMock(
+                            return_value=File(
+                                file_id="photo",
+                                file_unique_id="unique",
+                                file_path="image.png",
+                            )
+                        ),
                     ) as download,
+                    patch.object(bot.session, "stream_content", stream),
                     patch("dashulya.bot.images.first_frame", return_value=b"frame"),
                 ):
                     images = await loader.load_context(selected.messages)
@@ -154,7 +171,7 @@ class TestMemoryCapture:
                 assert images[0].first_frame == (kind == "animation")
                 download.assert_awaited_once()
                 assert download.await_args is not None
-                assert download.await_args.args[0].file_id == expected_file
+                assert download.await_args.args[0] == expected_file
                 originals = await restarted.originals(MemoryAccess(-123, False))
                 assert all(
                     "image_file" not in original.render() for original in originals

@@ -95,7 +95,7 @@ class AgentProvider(Provider):
                 search_memory,
                 chat_history,
                 set_reaction,
-                *create_web_tools(settings.exa_api_key),
+                *create_web_tools(settings.keenable_api_key),
             ],
             middleware=[Middleware(DishkaAsyncMiddleware, container=container)],
         )

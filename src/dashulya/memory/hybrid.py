@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from dashulya.domain.memory import OriginalMessage
+from dashulya.domain.memory import MemoryInputError, OriginalMessage
 from dashulya.memory._workers import run_in_thread
 from dashulya.memory.lexical import LexicalIndex
 from dashulya.memory.ranking import reciprocal_rank_fusion, select_source_diverse
@@ -246,10 +246,14 @@ def embedding_texts(originals: Sequence[OriginalMessage]) -> list[str]:
 def _date(value: str | None) -> datetime | None:
     if value is None:
         return None
-    parsed = datetime.fromisoformat(value)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        error = "Search dates must use ISO 8601 with a timezone."
+        raise MemoryInputError(error) from None
     if parsed.utcoffset() is None:
         error = "Search dates must include a timezone."
-        raise ValueError(error)
+        raise MemoryInputError(error)
     return parsed.astimezone(UTC)
 
 
@@ -347,7 +351,7 @@ class HybridMemory:
         lower, upper = _date(after), _date(before)
         if lower is not None and upper is not None and lower > upper:
             error_message = "after must not be later than before."
-            raise ValueError(error_message)
+            raise MemoryInputError(error_message)
         return {
             i
             for i, (block, sent) in enumerate(zip(self._blocks, self._dates, strict=True))

@@ -10,6 +10,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
+from dashulya.domain.memory import MemoryInputError
+
 _CONTEXT_FIELDS = (
     "chat_id",
     "message_id",
@@ -22,11 +24,23 @@ _CONTEXT_FIELDS = (
     "history_events",
     "input_chars",
     "image_count",
+    "request_message_id",
+    "media_phase",
+    "media_stage",
+    "media_kind",
+    "media_count",
+    "cache_status",
+    "image_bytes",
+    "loaded_images",
+    "omitted_images",
     "prompt_tokens",
     "completion_tokens",
     "thinking_tokens",
     "cached_input_tokens",
     "error_type",
+    "mcp_is_error",
+    "error_category",
+    "error_message",
     "status_code",
     "error_code",
     "error_param",
@@ -42,19 +56,25 @@ _CONTEXT_FIELDS = (
 )
 
 
-def _exception_trace(error: BaseException) -> list[dict[str, Any]]:
+def _exception_trace(
+    error: BaseException, *, seen: frozenset[int] = frozenset()
+) -> list[dict[str, Any]]:
     current: BaseException | None = error
     exceptions = []
-    seen: set[int] = set()
     while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        exceptions.append({
+        seen |= {id(current)}
+        entry: dict[str, Any] = {
             "type": type(current).__name__,
             "frames": [
                 {"file": frame.filename, "line": frame.lineno, "function": frame.name}
                 for frame in traceback.extract_tb(current.__traceback__)
             ],
-        })
+        }
+        if isinstance(current, BaseExceptionGroup):
+            entry["exceptions"] = [
+                _exception_trace(member, seen=seen) for member in current.exceptions
+            ]
+        exceptions.append(entry)
         current = current.__cause__ or (
             None if current.__suppress_context__ else current.__context__
         )
@@ -66,6 +86,8 @@ def exception_fields(error: BaseException) -> dict[str, object]:
         "error_type": type(error).__name__,
         "exceptions": _exception_trace(error),
     }
+    if isinstance(error, MemoryInputError):
+        fields["error_message"] = str(error)
     status = getattr(error, "status_code", None)
     if isinstance(status, int):
         fields["status_code"] = status

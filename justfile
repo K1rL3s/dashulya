@@ -62,6 +62,14 @@ lock-check:
 test-local:
     uv run --locked --no-dev --group test python -m pytest tests/local
 
+# Validate local memory-eval annotations without models or PostgreSQL.
+eval-memory-validate *args:
+    uv run --locked --no-dev python -m evals.suites.memory validate {{args}}
+
+# Export input-only queries and evaluator review material without model calls.
+eval-memory-export *args:
+    uv run --locked --no-dev python -m evals.suites.memory export {{args}}
+
 # Run all tests against an isolated TEST_DATABASE_URL, without Telegram or OpenAI.
 test:
     uv run --locked --no-dev --group test python -m tests.postgres

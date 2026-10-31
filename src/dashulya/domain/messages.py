@@ -29,7 +29,7 @@ class ImageAttachment:
 class ImageOmission:
     message_id: int
     reason: Literal[
-        "too_large", "preview_unavailable", "decode_failed", "unavailable"
+        "too_large", "preview_unavailable", "decode_failed", "unavailable", "unsupported"
     ] = "too_large"
 
 

@@ -12,7 +12,7 @@ from aiogram.types import Message
 from dashulya.ai.dialogue import Dialogue
 from dashulya.bot.images import TelegramImages
 from dashulya.bot.replies import ReplyDelivery
-from dashulya.domain.messages import Reply
+from dashulya.domain.messages import ImageOmission, Reply
 
 PRIVATE = {"id": 42, "type": "private", "first_name": "Anna"}
 
@@ -56,6 +56,29 @@ class TestReplyDelivery:
             call.args[1]
             for call in self.requests.call_args_list
             if isinstance(call.args[1], SendRichMessage)
+        ]
+
+    async def test_failed_image_download_still_reaches_the_reply_agent(self) -> None:
+        incoming = Message.model_validate({
+            "message_id": 1,
+            "date": datetime(2026, 10, 27, tzinfo=UTC),
+            "chat": PRIVATE,
+            "from": {"id": 42, "is_bot": False, "first_name": "Anna"},
+            "caption": "Read this picture",
+            "photo": [
+                {"file_id": "photo", "file_unique_id": "unique", "width": 2, "height": 2}
+            ],
+        }).as_(self.bot)
+        self.dialogue.reply.return_value = Reply(
+            "I couldn't load the picture. Please resend it."
+        )
+        with patch.object(self.bot, "get_file", AsyncMock(side_effect=TimeoutError)):
+            await self.delivery.reply(incoming)
+        request = self.dialogue.reply.await_args.args[0]
+        assert request.images == (ImageOmission(1, "unavailable"),)
+        assert request.text == "Read this picture"
+        assert [reply.text for reply in self.replies()] == [
+            "I couldn't load the picture. Please resend it."
         ]
 
     async def test_markdown_bold_and_source_links_use_explicit_entities(

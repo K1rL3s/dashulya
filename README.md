@@ -44,8 +44,8 @@ and [Ostrikov's chat](https://t.me/aostrikov_agents_chat)
   the owner's private messages, including edits and successfully delivered replies.
 - **Inspect original history.** Read full sources, page through saved messages,
   resolve sender identities and count literal matches independently of embeddings.
-- **Search the web.** With `EXA_API_KEY` configured, find current public information
-  through Exa and read source pages, with links in the answer.
+- **Search the web.** With `KEENABLE_API_KEY` configured, find current public information
+  through Keenable and read source pages, with links in the answer.
 - **Keep track of groups.** List groups the bot has observed, preserving the
   registry across restarts.
 
@@ -123,7 +123,14 @@ files, stickers and GIF/Telegram animations in this selection are downloaded
 from Telegram using saved file IDs, even when they were sent without addressing
 the bot. Current and directly replied-to
 pictures can also be supplied as native image inputs. Missing parents and older
-media without saved file references remain unavailable. The selection has at most
+media without saved file references remain unavailable. Media candidates load
+through `asyncio.gather` within a shared byte budget and 10-second deadline.
+Individual metadata/download operations have a 5-second deadline. Failed inputs
+become explicit omission notes, including failures on the current message.
+Normalized images and animation frames use a bounded 64 MiB RAM cache for five
+minutes; unavailable files are remembered for 30 seconds. Media logs retain
+stages, timings, cache outcomes and omissions without file IDs, URLs or bytes.
+The selection has at most
 120 messages, with no additional token cap. See
 [the decision](docs/adr/0002-rebuild-group-reply-context.md).
 
@@ -268,13 +275,18 @@ credentials. Your `.env` stays out of Git and the Docker build context. The repl
 and addressing models default to `gpt-6-luna`; model, timezone and local storage
 settings are listed in [.env.example](.env.example).
 
-Set `EXA_API_KEY` to enable the AG2 [Exa tools](https://docs.ag2.ai/docs/user-guide/extensions/tools/search/exa/).
-The reply agent receives `exa_search` (five results with bounded text excerpts) and
-`exa_get_contents` (up to three public URLs per call). Without the key, those tools
-are absent and conversations and chat memory remain available. The addressing
-classifier never receives web tools. Search and page contents are untrusted evidence;
+Set `KEENABLE_API_KEY` to enable [Keenable MCP tools](https://docs.keenable.ai/mcp-server).
+The reply agent receives `search_web_pages` (five results with bounded snippets) and
+`fetch_page_content` (one public URL per call, up to 12000 characters). Page reads
+use the indexed copy by default; `live=true` fetches current or unindexed pages.
+The MCP endpoint is `https://api.keenable.ai/mcp`, authenticated with `X-API-Key`.
+Without the key, those tools are absent and conversations and chat memory
+remain available. The addressing classifier never receives web tools. Search and page contents are untrusted evidence;
 answers should cite their original URLs. Web-tool failures are reported without
-provider payloads, and each call has a 30-second deadline.
+provider payloads, and each call has a 30-second deadline. MCP tool rejections
+log `mcp_is_error`, a safe `error_category`, and recognized error codes or HTTP
+statuses when present. Unrecognized responses retain the `unknown` category;
+raw provider messages and query arguments are omitted.
 
 Generate `POSTGRES_PASSWORD` with `openssl rand -hex 32`. Keep it stable for an
 existing database. Compose supplies the internal `DATABASE_URL`; direct Python

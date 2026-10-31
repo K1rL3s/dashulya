@@ -79,6 +79,18 @@ List/context excerpts are bounded, while read returns up to 12,000 characters
 per call. Exact counts include blank saved records when the predicate does.
 This direct history interface remains available during embedding outages.
 
+Memory-tool failures return an error event containing a plain string, rather
+than an AG2 traceback. Invalid call arguments include a fixed `MemoryInputError`
+explanation or validation field/type details so the agent can correct the call.
+Unexpected failures expose their type and recovery guidance, without provider
+bodies, database diagnostics or source text. A failed lookup is not an empty
+result and cannot establish absence. Cancellation still propagates.
+Invalid tool arguments are logged at warning level; provider, database and
+unexpected failures use error level. Logs include the trusted request and tool-call
+IDs, safe provider metadata, and complete exception chains and stack frames in
+`exceptions`. Fixed memory-input explanations are also logged as `error_message`;
+arbitrary exception messages and frame locals stay out of the logs.
+
 For `list` and `read`, `parent_hops` controls reply-parent expansion from each
 primary original: five by default, zero to disable, any nonnegative integer to
 request a deeper chain. These actions return ancestors as separate `context`;
@@ -124,13 +136,23 @@ attachment contents. Incoming reply
 snapshots can fill missing parents without overwriting recorded originals or
 their deeper reply relationships.
 
-After sender authorization and a positive addressing decision, the reply path
-can download the current visual media and its direct reply parent's image into RAM. Group
-replies also download saved visual-media references from the exact selected
-reply context, after selection. Current and direct-reply inputs take priority;
-remaining saved images are loaded newest first without downloading an already
-supplied source again. JPEG, PNG and WebP signatures are checked, and their
-combined bytes are capped at 20,000,000 during streaming. An image known to exceed the remaining budget is
+After sender authorization and a positive addressing decision, private replies
+load the current visual media and its direct reply parent's image into RAM.
+Group replies select their reply context first, then load all of that selection's
+visual-media references in one batch, including the current message and parent.
+Every candidate starts through `asyncio.gather`. Ready metadata and cached images
+can reserve bytes immediately; they never queue behind an earlier candidate's
+metadata request. Under actual byte pressure, current/direct-parent and then
+newest-first priority determine which inputs remain: a later-ready higher-priority
+input can reclaim bytes from a completed lower-priority input. Reclaimed originals
+become budget omissions in the final result; their successful cache entries remain
+usable. Only capacity held by unfinished downloads can require waiting. Unknown
+sizes reserve the currently available capacity and may grow by reclaiming lower
+priority completed inputs. All
+tasks share one 10-second batch deadline; metadata requests and streams each have
+a 5-second network deadline. Cancelling a batch cancels and joins all its tasks.
+JPEG, PNG and WebP signatures are checked, and combined retained/reserved bytes
+are capped at 20,000,000 during streaming. An image known to exceed the remaining budget is
 not downloaded and instead produces an explicit oversized-image note for the
 reply agent. An overflow discovered while streaming stops the download and
 produces the same note.
@@ -139,10 +161,26 @@ with their source message IDs. Group inputs are restricted
 to the selected reply context. No image bytes or generated descriptions are
 written to the evidence database or indexed in chat memory. File references
 survive restarts but stay out of model-facing memory tools and embeddings.
-Unavailable saved files produce omission notes without preventing a reply using
-the remaining inputs. Context downloads share a 30-second deadline. Older media
+Unavailable files, including current-message media, produce omission notes
+without preventing a reply using the remaining inputs. Unsupported image data
+has its own omission reason. Older media
 without saved references remain placeholders, including photos captured before
-this change. Private image bytes stay only in bounded in-memory history.
+this change. Private image history and the media cache remain in bounded RAM.
+
+The application-scoped loader uses `cachetools.TTLCache` for normalized images
+and animation frames: a 64 MiB payload limit and five-minute TTL. A separate
+256-entry cache retains unavailable/unsupported results for 30 seconds. Request
+byte-budget omissions and cancellation are never cached as file failures.
+Budget-dependent animation thumbnail fallbacks do not replace a later chance to
+decode the original. Cached inputs still consume the current request's byte
+budget and can be returned only for its authorized selected sources. File
+references are cache keys only; cached bytes and provider errors are never
+persisted or exposed as evidence.
+
+Media logs cover each batch, each source, metadata/download/decode stages,
+thumbnail fallback, cache hits, omissions and cancellation. Events contain chat,
+request and source message IDs, durations, byte counts, outcomes and redacted
+exception chains. They omit file IDs, file URLs, bytes and source text.
 
 The same reply path accepts sticker messages and direct-reply stickers. Static
 stickers use their image bytes; animated and video stickers use Telegram's

@@ -9,7 +9,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from ag2 import Agent, MemoryStream
-from ag2.events import ModelRequest, TextInput, ToolCallEvent, ToolResultEvent
+from ag2.events import (
+    ModelRequest,
+    TextInput,
+    ToolCallEvent,
+    ToolErrorEvent,
+    ToolResultEvent,
+)
 from ag2.testing import TestConfig
 from dirty_equals import IsStr
 
@@ -28,6 +34,9 @@ from dashulya.domain.memory import (
 from dashulya.domain.messages import Reply, ReplyRequest
 from dashulya.main import create_container
 from dashulya.main.config import Settings
+from dashulya.memory._recall import ScopedRecall
+from dashulya.memory.history import CanonicalHistory
+from dashulya.memory.store import MessageStore
 from tests.support import (
     TEST_API_KEY,
     MemoryOverride,
@@ -388,6 +397,102 @@ class TestToolMessageRoundtrip:
     @pytest.fixture
     def _setup(self, cleanup: AsyncExitStack) -> None:
         self.cleanup = cleanup
+
+    @pytest.mark.parametrize(
+        ("name", "arguments", "reason", "recovery"),
+        [
+            (
+                "chat_history",
+                {"action": "read"},
+                "Reading an original requires its source_id.",
+                {"action": "list"},
+            ),
+            (
+                "search_memory",
+                {"query": "original", "chat": "telegram:-100456"},
+                "Chat selector is outside this conversation's memory access.",
+                {"query": ""},
+            ),
+            (
+                "chat_history",
+                {"after": "PRIVATE INVALID DATE"},
+                "History dates must use ISO 8601 with a timezone.",
+                {"action": "list"},
+            ),
+            (
+                "search_memory",
+                {"memory_id": "source:missing:1", "before": "PRIVATE INVALID DATE"},
+                "Search dates must use ISO 8601 with a timezone.",
+                {"query": ""},
+            ),
+            (
+                "chat_history",
+                {"limit": "PRIVATE INVALID INTEGER"},
+                "limit: int_parsing",
+                {"action": "list"},
+            ),
+        ],
+    )
+    async def test_memory_errors_reach_the_agent_as_strings_and_allow_recovery(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        reason: str,
+        recovery: dict[str, Any],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        access = MemoryAccess(-100123, False)
+        store = AsyncMock(spec=MessageStore)
+        store.originals.return_value = []
+        reader = CanonicalHistory(store, access)
+        backend = ScopedRecall(reader, AsyncMock())
+        container = create_container(
+            Settings(bot_token="123:TEST", openai_api_key=TEST_API_KEY, owner_user_id=42),
+            MemoryOverride(backend, reader=reader),
+            ModelOverrides(
+                reply=TestConfig(
+                    ToolCallEvent(
+                        name, id="invalid-call", arguments=json.dumps(arguments)
+                    ),
+                    ToolCallEvent(
+                        name, id="recovery-call", arguments=json.dumps(recovery)
+                    ),
+                    reply_json("Done"),
+                    raise_tool_errors=False,
+                ),
+                decision=TestConfig("false"),
+            ),
+        )
+        self.cleanup.push_async_callback(container.close)
+        agent = await container.get(Agent[Reply])
+        stream = MemoryStream()
+        response = await agent.ask(
+            "Read originals", stream=stream, dependencies={"memory_access": access}
+        )
+        assert (await response.content()) == Reply("Done")
+        error, recovered = [
+            event
+            for event in await stream.history.get_events()
+            if isinstance(event, ToolResultEvent)
+        ]
+        assert isinstance(error, ToolErrorEvent)
+        assert error.parent_id == "invalid-call"
+        (part,) = error.result.parts
+        assert isinstance(part, TextInput)
+        assert reason in part.content
+        assert "Correct the arguments" in part.content
+        assert "Traceback" not in part.content
+        assert "PRIVATE" not in part.content
+        assert not isinstance(recovered, ToolErrorEvent)
+        assert recovered.parent_id == "recovery-call"
+        assert store.originals.await_count == 1
+        (failure,) = [
+            record
+            for record in caplog.records
+            if record.name == "dashulya.ai.agents.tracing"
+            and getattr(record, "tool_call_id", None) == "invalid-call"
+        ]
+        assert failure.levelname == "WARNING"
 
     async def test_current_group_sender_is_marked_in_the_actual_agent_input(self) -> None:
         agent = create_reply_agent(TestConfig(reply_json("Done")), tools=[])

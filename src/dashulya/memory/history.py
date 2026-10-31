@@ -8,7 +8,12 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
-from dashulya.domain.memory import MemoryAccess, OriginalMessage, TruncatedThread
+from dashulya.domain.memory import (
+    MemoryAccess,
+    MemoryInputError,
+    OriginalMessage,
+    TruncatedThread,
+)
 from dashulya.memory.store import MessageStore
 
 
@@ -34,10 +39,14 @@ def _name_matches(message: OriginalMessage, value: str | None) -> bool:
 def _date(value: str | None) -> datetime | None:
     if value is None:
         return None
-    parsed = datetime.fromisoformat(value)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        error_message = "History dates must use ISO 8601 with a timezone."
+        raise MemoryInputError(error_message) from None
     if parsed.utcoffset() is None:
         error_message = "History dates must include a timezone."
-        raise ValueError(error_message)
+        raise MemoryInputError(error_message)
     return parsed.astimezone(UTC)
 
 
@@ -72,7 +81,7 @@ def _cursor_encode(fingerprint: str, position: tuple[str, str, int]) -> str:
 def _cursor_decode(value: str, fingerprint: str) -> tuple[str, str, int]:
     if len(value) > 2048:
         error_message = "History cursor is invalid for this access scope and query."
-        raise ValueError(error_message)
+        raise MemoryInputError(error_message)
     try:
         decoded = json.loads(base64.b64decode(value, altchars=b"-_", validate=True))
         position = decoded["before"]
@@ -86,7 +95,7 @@ def _cursor_decode(value: str, fingerprint: str) -> tuple[str, str, int]:
             raise ValueError
     except (ValueError, KeyError, TypeError, IndexError):
         error_message = "History cursor is invalid for this access scope and query."
-        raise ValueError(error_message) from None
+        raise MemoryInputError(error_message) from None
     return position[0], position[1], position[2]
 
 
@@ -173,7 +182,7 @@ class CanonicalHistory:
         visible = await self.store.originals(self.access, chat=chat)
         if chat is not None and self.access.is_private and not visible:
             error_message = "Unknown saved chat collection within this access scope."
-            raise ValueError(error_message)
+            raise MemoryInputError(error_message)
         return visible
 
     def coverage(self, originals: Sequence[OriginalMessage]) -> dict[str, Any]:
@@ -215,7 +224,7 @@ class CanonicalHistory:
             and selector != f"telegram:{self.access.chat_id}"
         ):
             error_message = "Chat selector is outside this conversation's memory access."
-            raise ValueError(error_message)
+            raise MemoryInputError(error_message)
 
     @staticmethod
     def _matches(
@@ -310,29 +319,29 @@ class CanonicalHistory:
         """
         if action not in {"list", "read", "count", "authors", "chats"}:
             error_message = "Unknown history action."
-            raise ValueError(error_message)
+            raise MemoryInputError(error_message)
         if type(parent_hops) is not int or parent_hops < 0:
             error_message = "parent_hops must be a nonnegative integer."
-            raise ValueError(error_message)
+            raise MemoryInputError(error_message)
         if not 1 <= limit <= 50 or offset < 0 or (cursor is not None and offset):
             error_message = (
-                "Use limit1-50, a nonnegative offset, and no offset with cursor."
+                "Use limit 1-50, a nonnegative offset, and no offset with cursor."
             )
-            raise ValueError(error_message)
+            raise MemoryInputError(error_message)
         if action == "read" and source_id is None:
             error_message = "Reading an original requires its source_id."
-            raise ValueError(error_message)
+            raise MemoryInputError(error_message)
         if action != "read" and source_id is not None:
             error_message = "source_id is supported by read only."
-            raise ValueError(error_message)
+            raise MemoryInputError(error_message)
         if action != "list" and cursor is not None:
             error_message = "History cursors are supported by list only."
-            raise ValueError(error_message)
+            raise MemoryInputError(error_message)
         self._chat(chat)
         lower, upper = _date(after), _date(before)
         if lower is not None and upper is not None and lower > upper:
             error_message = "after must not be later than before."
-            raise ValueError(error_message)
+            raise MemoryInputError(error_message)
         originals = await self.originals(chat=chat)
         identities = {_identity(m) for m in originals if _name_matches(m, name_contains)}
         matched = [

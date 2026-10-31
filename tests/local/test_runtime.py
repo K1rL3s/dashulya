@@ -23,7 +23,7 @@ class TestEntrypoint:
             bot_token="123:TEST",
             openai_api_key=TEST_API_KEY,
             owner_user_id=42,
-            exa_api_key="exa-test-only",  # pragma: allowlist secret -- Fake test key.
+            keenable_api_key="keenable-test-only",  # pragma: allowlist secret -- Fake test key.
             database_url="postgresql://user:synthetic-password@localhost/test",  # pragma: allowlist secret -- Fake test database.
             log_path=Path(directory.name) / "bot.log",
         )
@@ -70,7 +70,7 @@ class TestEntrypoint:
                 secrets=(
                     self.settings.bot_token,
                     TEST_API_KEY,
-                    self.settings.exa_api_key,
+                    self.settings.keenable_api_key,
                     self.settings.database_url,
                     "synthetic-password",
                 ),

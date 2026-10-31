@@ -226,7 +226,8 @@ class Dialogue:
                     "too_large": f"too large for the {self._max_image_bytes / 1_000_000:g} MB image byte budget. ",
                     "preview_unavailable": "Telegram did not provide a thumbnail for this media. ",
                     "decode_failed": "The original animation could not be decoded and no usable thumbnail was available. ",
-                    "unavailable": "The saved image could not be downloaded. ",
+                    "unavailable": "This image could not be downloaded. ",
+                    "unsupported": "This attachment could not be read as a supported image. ",
                 }[image.reason]
                 parts.append(
                     TextInput(
@@ -322,7 +323,7 @@ class Dialogue:
                 allowed_reply_ids = {item.message_id for item in selected}
                 if self._context_images is not None:
                     images = await self._context_images.load_context(
-                        selected, images=images
+                        selected, images=images, request_message_id=message_id
                     )
             elif message_id is not None:
                 message += f"\nTelegram message ID: {message_id}"

@@ -164,7 +164,7 @@ class TestSettings:
             assert load_settings().owner_user_id == 1234567890123
 
     @patch("dashulya.main.config.load_dotenv")
-    def test_exa_key_is_optional_trimmed_and_hidden(
+    def test_keenable_key_is_optional_trimmed_and_hidden(
         self, mock_load_dotenv: MagicMock
     ) -> None:
         env = {
@@ -174,10 +174,10 @@ class TestSettings:
             "DATABASE_URL": "postgresql://localhost/dashulya",
         }
         with patch.dict(os.environ, env, clear=True):
-            assert load_settings().exa_api_key == ""
-            os.environ["EXA_API_KEY"] = " exa-test-only "
+            assert load_settings().keenable_api_key == ""
+            os.environ["KEENABLE_API_KEY"] = " keen-test "
             settings = load_settings()
-            assert settings.exa_api_key == "exa-test-only"  # pragma: allowlist secret
-            assert "exa-test-only" not in repr(settings)
-            os.environ["EXA_API_KEY"] = " "
-            assert load_settings().exa_api_key == ""
+            assert settings.keenable_api_key == "keen-test"  # pragma: allowlist secret
+            assert "keen-test" not in repr(settings)
+            os.environ["KEENABLE_API_KEY"] = " "
+            assert load_settings().keenable_api_key == ""

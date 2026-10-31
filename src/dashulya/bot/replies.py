@@ -57,7 +57,7 @@ class ReplyDelivery:
         reply_to_message_id = message.message_id
         async with typing(self._bot, message):
             try:
-                images = await self._load_images(message)
+                images = await self._load_images(message) if message.chat.id > 0 else ()
                 reply = await self._dialogue.reply(
                     ReplyRequest(
                         conversation_key(message),

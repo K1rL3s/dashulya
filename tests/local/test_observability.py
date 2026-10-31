@@ -1,5 +1,6 @@
 import json
 import logging
+from asyncio import CancelledError
 from contextlib import AsyncExitStack
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -114,6 +115,84 @@ class TestLogging:
         assert [item["type"] for item in event["exceptions"]] == [
             "RuntimeError",
             "ValueError",
+        ]
+
+    @pytest.mark.parametrize("use_exc_info", [False, True])
+    def test_nested_exception_groups_preserve_member_traces_and_hide_contents(
+        self, capsys: pytest.CaptureFixture[str], use_exc_info: bool
+    ) -> None:
+        configure_logging(self.path)
+        private_text = "PRIVATE USER TEXT"
+        provider_body = "SECRET PROVIDER BODY"
+        try:
+            try:
+                raise ValueError(private_text)
+            except ValueError as cause:
+                raise RuntimeError(provider_body) from cause
+        except RuntimeError as member:
+            nested = ExceptionGroup(provider_body, [member])
+        try:
+            try:
+                raise LookupError(private_text)
+            except LookupError as member:
+                raise ExceptionGroup(provider_body, [nested, member]) from None
+        except ExceptionGroup as error:
+            if use_exc_info:
+                self.root.exception("Grouped failure")
+            else:
+                self.root.error("Grouped failure", extra=exception_fields(error))
+        text = self.path.read_text()
+        assert text == capsys.readouterr().err
+        assert private_text not in text
+        assert provider_body not in text
+        event = json.loads(text)
+        assert len(event["exceptions"]) == 1
+        group = event["exceptions"][0]
+        assert group["type"] == "ExceptionGroup"
+        assert group["frames"]
+        nested_chain, sibling_chain = group["exceptions"]
+        assert nested_chain[0]["type"] == "ExceptionGroup"
+        member_chain = nested_chain[0]["exceptions"][0]
+        assert [item["type"] for item in member_chain] == [
+            "RuntimeError",
+            "ValueError",
+        ]
+        assert all(item["frames"] for item in member_chain)
+        assert len(sibling_chain) == 1
+        assert sibling_chain[0]["type"] == "LookupError"
+        assert sibling_chain[0]["frames"]
+
+    def test_base_exception_group_preserves_cancellation_members(self) -> None:
+        configure_logging(self.path)
+        private_text = "PRIVATE CANCELLATION"
+        try:
+            raise CancelledError(private_text)
+        except CancelledError as member:
+            group = BaseExceptionGroup("PRIVATE GROUP", [member])
+        self.root.error("Grouped failure", extra=exception_fields(group))
+        text = self.path.read_text()
+        event = json.loads(text)
+        assert event["error_type"] == "BaseExceptionGroup"
+        member_chain = event["exceptions"][0]["exceptions"][0]
+        assert member_chain[0]["type"] == "CancelledError"
+        assert member_chain[0]["frames"]
+        assert "PRIVATE" not in text
+
+    def test_exception_groups_preserve_shared_members_without_following_cycles(
+        self,
+    ) -> None:
+        configure_logging(self.path)
+        member = ValueError("PRIVATE MEMBER")
+        group = ExceptionGroup("PRIVATE GROUP", [member, member])
+        member.__cause__ = group
+        group.__cause__ = member
+        self.root.error("Grouped failure", extra=exception_fields(group))
+        event = json.loads(self.path.read_text())
+        group_trace, cause_trace = event["exceptions"]
+        assert cause_trace["type"] == "ValueError"
+        assert group_trace["exceptions"] == [
+            [{"type": "ValueError", "frames": []}],
+            [{"type": "ValueError", "frames": []}],
         ]
 
     def test_json_logs_preserve_requested_and_effective_reply_targets(self) -> None:

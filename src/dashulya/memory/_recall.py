@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from dashulya.domain.memory import MemoryInputError
 from dashulya.memory._engines import EngineCache
 from dashulya.memory.history import CanonicalHistory
 
@@ -11,23 +12,27 @@ def _history_before(value: str | None, after: str | None) -> str | None:
     """Translate recall's inclusive upper bound to canonical history's exclusive one."""
     if value is None:
         return None
-    upper = datetime.fromisoformat(value)
+    try:
+        upper = datetime.fromisoformat(value)
+        lower = datetime.fromisoformat(after) if after is not None else None
+    except ValueError:
+        error_message = "Search dates must use ISO 8601 with a timezone."
+        raise MemoryInputError(error_message) from None
     if upper.utcoffset() is None:
         error_message = "Search dates must include a timezone."
-        raise ValueError(error_message)
-    if after is not None:
-        lower = datetime.fromisoformat(after)
+        raise MemoryInputError(error_message)
+    if lower is not None:
         if lower.utcoffset() is None:
             error_message = "Search dates must include a timezone."
-            raise ValueError(error_message)
+            raise MemoryInputError(error_message)
         if lower > upper:
             error_message = "after must not be later than before."
-            raise ValueError(error_message)
+            raise MemoryInputError(error_message)
     try:
         upper = upper.astimezone(UTC)
     except OverflowError:
         error_message = "Search date is outside the supported UTC range."
-        raise ValueError(error_message) from None
+        raise MemoryInputError(error_message) from None
     if upper == datetime.max.replace(tzinfo=UTC):
         # Every representable canonical timestamp satisfies this upper bound.
         return None
