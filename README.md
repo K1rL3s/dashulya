@@ -426,3 +426,8 @@ Dishka constructs the shared dependency graph for aiogram and AG2. The
 [dependency injection design](docs/design/dependency-injection.md) describes
 module responsibilities, scopes, resource cleanup, and provider overrides in
 tests. Domain terms are defined in [GLOSSARY.md](GLOSSARY.md).
+
+## License
+
+Dashulya is licensed under the [MIT License](LICENSE).
+The adapted slop-writer renderer retains its [Apache-2.0 license](src/dashulya/bot/slop-writer.LICENSE).
