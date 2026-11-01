@@ -32,3 +32,8 @@ Review scopes, provider overrides, and resource lifetimes against
 
 Keep history and turn locking together in `ai/dialogue.py` so replies and
 clearing history share the same conversation state boundary.
+
+## Behavioral tests
+
+Review new or strengthened behavioral tests against
+[TDD's fault-detection criteria](.agents/skills/tdd/SKILL.md#prove-the-tests-detect-faults).

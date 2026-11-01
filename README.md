@@ -457,8 +457,9 @@ Inspect their assertions and surviving mutants, then compare the same mutations
 after a change. Distinguish behavioral gaps from equivalent mutations and timing
 failures; a selected mutation score does not establish complete test coverage.
 
-Architecture, development commands, and reference bot repositories live in
-[AGENTS.md](AGENTS.md). The [repository layout](docs/design/repository-layout.md)
+Architecture and contributor instructions live in [AGENTS.md](AGENTS.md).
+See [reference bots](docs/design/chat-memory.md#reference-bots) for source comparisons.
+The [repository layout](docs/design/repository-layout.md)
 separates design documents, evaluation infrastructure and local application state.
 PRDs live in GitHub Issues; datasets, evaluation results and research drafts are
 local files excluded from Git. See [evals/](evals/README.md) for evaluation setup.

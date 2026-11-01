@@ -443,3 +443,15 @@ chat-memory continuity across group migrations. The group registry's migration
 handling is a separate responsibility. These remain broader
 [PRD #3](https://github.com/Lancetnik/dashulya/issues/3) requirements; the current
 candidate does not satisfy the complete specification.
+
+## Reference bots
+
+- **Osinara:** [nyxandro/osinara](https://github.com/nyxandro/osinara), the original
+  reference project by `@nyxandro`.
+- **Miya:** [ilkruglov/osinara](https://github.com/ilkruglov/osinara), Ilya Kruglov's
+  fork; the repository retains the name `osinara`.
+
+Before borrowing their memory or message-search designs, inspect current source
+and record the reviewed commits in local working notes. Distinguish original
+history, reply context and extracted knowledge. Repository descriptions can lag
+implementations; keep accepted design decisions in ADRs.

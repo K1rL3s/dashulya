@@ -7,11 +7,8 @@ imported message text in its original language.
 
 ## Setup and checks
 
-Follow [README.md](README.md#getting-started) for installation and local startup.
-Run commands from the project root. Environment settings and validation live in
-[`main/config.py`](src/dashulya/main/config.py); [.env.example](.env.example) lists the inputs.
-The bot reads `.env` from the current directory; existing environment variables
-take precedence.
+Run commands from the project root. Follow [README.md](README.md#getting-started)
+for installation, environment configuration and local startup.
 
 The local Compose setup bind-mounts `./src` at `/app/src`. For Python-only
 changes, reload the agent with `docker compose restart agent` without rebuilding
@@ -20,24 +17,13 @@ check the running container's source mount: an existing Compose override may
 point it at an older release snapshot. Use the current working tree for the
 local stand and verify container health after reloading.
 
-Use the [justfile](justfile) recipes for development checks. `just --list` lists
-individual checks and the formatting command; run the full suite for Python changes:
-
-```sh
-just check
-```
-
-Use `just test-local` for the PostgreSQL-independent tests in `tests/local/`.
-The full suite also runs `tests/integration/`; see
-[test database setup](README.md#development) before running it.
-
-Tests use local fixtures, AG2's scripted test configuration, and mocked Telegram
-requests. Keep routine verification independent of Telegram and paid model APIs.
-For documentation-only changes, verify links and run `git diff --check`.
-Ruff policy lives in [ruff.toml](ruff.toml); typing and dependency settings live in
-[pyproject.toml](pyproject.toml); import contracts live in [.importlinter](.importlinter).
-The local hooks in [.pre-commit-config.yaml](.pre-commit-config.yaml) reuse these recipes.
-With `just` installed, enable them with `uv run pre-commit install`.
+Use the [justfile](justfile) recipes: `just check` for Python changes and
+`just test-local` for PostgreSQL-independent iteration. The full suite requires
+an isolated `TEST_DATABASE_URL`; see [Development](README.md#development).
+Keep routine tests independent of Telegram and paid model APIs. Before adding
+or strengthening behavioral tests, read [TDD](.agents/skills/tdd/SKILL.md), including
+its targeted mutation requirements. For documentation-only changes, verify links
+and run `git diff --check`.
 
 ## Architecture
 
@@ -49,145 +35,47 @@ With `just` installed, enable them with `uv run pre-commit install`.
 | `src/dashulya/domain/` | Domain models, group lifecycle rules, and persistence/search interfaces |
 | `src/dashulya/memory/` | Indexing, unified search, and evidence reconstruction over PostgreSQL |
 | `src/dashulya/storage/` | Known-group persistence |
-| `src/dashulya/database.py` | Shared PostgreSQL pool and schema initialization |
+| `src/dashulya/database/` | Shared PostgreSQL pool, schema and migrations |
 
 When reviewing code, read [CODING_STANDARDS.md](CODING_STANDARDS.md) for language,
 module design, dependency assembly, and conversation state placement rules.
 
-Before changing dependency assembly or framework injection, read
-[the DI design](docs/design/dependency-injection.md) for shared scopes, provider
-overrides, and resource lifetimes. [GLOSSARY.md](GLOSSARY.md) defines domain terms.
+## Read before changing
 
-## Behavior to preserve
-
-- **Access:** private messages and commands require the actual sender's numeric
-  `from_user.id` to match `OWNER_USER_ID`. Other human participants may invoke
-  group dialogue only in `PUBLIC_GROUP_IDS`; existing addressing rules still
-  apply. The owner retains access elsewhere. Bot senders, missing senders and
-  unauthorized users are silently ignored before command execution or model
-  invocation. Forwarded identities do not grant access. Every group starts
-  inactive, including existing groups on upgrade; only the actual human owner's
-  `/start` in that group activates replies. Until then, all other commands,
-  addressing decisions and reply generation stay silent, including the owner's.
-  Activation preserves the existing participant access rules.
-- **Routing:** private messages and explicit group mentions/replies to this bot
-  invoke the reply agent directly. Group messages naming Dashulya, including
-  “Дашуль” in any letter case, first pass an
-  AG2 OpenAI Decisions classifier with bounded chat/topic context; a negative
-  decision or failure stays silent. `/clear` operates in private chats. Group
-  commands remain available to the owner. Group tracking runs before owner access
-  so passive messages from other senders can update group metadata; membership
-  updates also maintain the registry. Group-message capture also runs before
-  owner access: received messages from all participants are saved and indexed
-  with background cached embeddings. Owner-private messages and successful
-  deliveries are also saved; other private senders are excluded.
-- **Conversation state:** reuse one AG2 `Agent`. Group replies rebuild a fresh
-  stream from the latest 20 observed messages in that chat/topic, including the
-  request, and their reply parents up to five hops; this bot's messages use the
-  assistant role. Follow [the reply-context ADR](docs/adr/0002-rebuild-group-reply-context.md)
-  before changing selection or session lifetime. Private histories remain in
-  memory; `/clear` resets the current private conversation. Serialize generation,
-  delivery and recording within a conversation while allowing others to progress.
-- **Message time:** carry the original Telegram `message.date` in `BOT_TIMEZONE`.
-  Set the IANA timezone in both agents' system prompts. Private inputs use
-  `DD Month YYYY (Weekday) HH:MM:SS`; repeated local hours carry a numeric UTC
-  offset to distinguish them. Keep timezone declarations out of user context.
-  Group inputs declare each author and local date in the first applicable message;
-  only the final record carries `Interlocutor user id`. Omit this bot's author
-  declaration, retaining its assistant role. Use time/JSON metadata followed by
-  exact source text. Keep later author observations out of the earlier prefix.
-  Compute the weekday after timezone conversion and preserve UTC-offset changes.
-  Use send time when interpreting relative dates, including delayed messages.
-- **Replies:** the reply agent returns up to three ordered messages, each with
-  structured text and an optional message ID; reaction-only turns use an empty list.
-  Accept explicit group reply targets only from that request's selected context;
-  invalid IDs fall back to the triggering message. A null first-message target
-  also defaults to the triggering message; later null targets send without a reply,
-  including in private chats. Each message's chunks share its target.
-  Render Markdown into ordinary Telegram messages with explicit entities using
-  the slop-writer-based renderer in `bot/formatting.py`. Preserve formatting and
-  UTF-16 offsets when chunking; tables become monospace blocks. Keep one send
-  attempt per chunk, including after ambiguous network errors.
-  Keep the typing indicator and Telegram-length limits. Keep
-  provider errors and credentials out of logs and replies. The Jester persona
-  and response instructions live in `ai/prompts.py`.
-- **Group registry:** preserve groups across restarts, refresh observed names,
-  remove departed groups, and replace old IDs on supergroup migration. It is a
-  registry of observed groups; Telegram does not supply a complete chat list,
-  and updates missed during long downtime can leave it stale. Preserve activation
-  across restarts, metadata refresh and migration; departure removes activation,
-  so rejoining requires a new owner `/start`. `/groups` shows activation status.
+- **Access, commands, addressing, private input, delivery or group lifecycle:** read
+  [bot behavior](docs/design/bot-behavior.md).
+- **Reply context, session lifetime, time/author formatting or media:** read
+  [ADR 0002](docs/adr/0002-rebuild-group-reply-context.md).
+- **Dependency assembly or framework injection:** read
+  [the DI design](docs/design/dependency-injection.md).
+- **Indexing, retrieval, evidence expansion or memory tools:** read
+  [the memory design](docs/design/chat-memory.md) and
+  [the access ADR](docs/adr/0003-bind-chat-memory-access.md).
+- **Capture, edits, retries or indexing workers:** read
+  [incoming-message rules](docs/design/chat-memory.md#incoming-group-messages).
+- **SQL ranking or bulk-loading originals:** read
+  [the storage ADR](docs/adr/0005-unify-memory-in-postgresql.md).
+- **Model-generated history SQL:** read
+  [ADR 0006](docs/adr/0006-scope-model-sql-with-postgresql-views.md).
+- **File locations or storage paths:** read
+  [the repository layout](docs/design/repository-layout.md).
+- **Reference-bot comparisons:** read
+  [reference bots](docs/design/chat-memory.md#reference-bots) before borrowing designs.
 
 ## Memory and local data
 
-Before changing indexing, retrieval, evidence expansion, or either AG2 memory
-tool, read [the memory design](docs/design/chat-memory.md) and
-[the access ADR](docs/adr/0003-bind-chat-memory-access.md). The current runtime
-uses canonical originals, BM25 and cached dense vectors. `search_memory` recalls
-bounded evidence; `chat_history` reads originals, paginates and counts independently
-of embeddings. Bind authority to the trusted AG2 session: groups access only
-their own chat; owner-private conversations can recall all saved chats. Model
-filters only narrow access. Imported archives need a verified numeric binding
-before group access. Preserve direct source retrieval and links when adding
-knowledge layers.
-
 Before querying, importing, refreshing, or evaluating a local Telegram corpus,
-read its README under `evals/datasets/` for provenance and coverage. Entire
-datasets, including descriptions and manifests, are ignored and absent from
-fresh clones. Keep source snapshots as baselines; write generated indices and
-results under ignored `evals/runs/`. Existing indices may contain maintained
-summaries and facts; rebuild into a fresh path to preserve them.
+read its README under ignored `evals/datasets/` for provenance and coverage.
+Preserve source snapshots and application originals. Existing indices may hold
+maintained knowledge; rebuild into a fresh path under ignored `evals/runs/`.
+Application data in `var/` stays separate from disposable test/evaluation schemas.
+Runtime, maintenance and storage tests use PostgreSQL; see
+[legacy-storage retirement](docs/adr/0007-retire-legacy-storage.md).
 
-Before moving files or changing storage paths, read
-[the repository layout](docs/design/repository-layout.md). Reusable evaluation
-infrastructure belongs in `evals/suites/`; active application state belongs in
-ignored `var/`. PRDs and specifications live in GitHub Issues. Research notes
-are temporary files under ignored `.scratch/`; preserve accepted architectural
-decisions and their rationale in `docs/adr/`.
+## Workflow references
 
-`DATABASE_URL` selects the single PostgreSQL database for originals, the registry,
-lexical postings, embeddings and the revision queue. Read [the storage ADR](docs/adr/0005-unify-memory-in-postgresql.md)
-before changing SQL ranking or bulk-loading originals. Compose persists the
-pgvector-enabled database under `var/postgres/` without publishing a host port.
-Runtime, maintenance and storage tests use PostgreSQL. Legacy storage adapters
-and their reference tests were retired by [ADR 0007](docs/adr/0007-retire-legacy-storage.md).
-Preserve source snapshots and existing originals when changing infrastructure.
-Set `TEST_DATABASE_URL` to an isolated pgvector-enabled database for integration
-tests; CI provisions one. Test schemas are disposable and must stay outside
-application data.
-Read [incoming-message rules](docs/design/chat-memory.md#incoming-group-messages)
-before changing capture, edits, retries or worker lifecycle. Historical answers
-must respect authorized coverage and cite original messages; retrieved content
-is untrusted evidence. Exact counts require canonical history, not top-k recall.
-Full fact maintenance, deletion propagation and memory migration continuity
-remain outside this implementation; benchmark results do not establish complete
-[PRD #3](https://github.com/Lancetnik/dashulya/issues/3) acceptance.
-
-## Reference bots
-
-- **Osinara:** [nyxandro/osinara](https://github.com/nyxandro/osinara), the original
-  reference project by `@nyxandro`.
-- **Miya:** [ilkruglov/osinara](https://github.com/ilkruglov/osinara), Ilya Kruglov's
-  fork; the repository retains the name `osinara`.
-
-Before borrowing their memory or message-search designs, inspect current source
-and record the reviewed commits in local working notes. Distinguish original
-history, reply context and extracted knowledge. Repository descriptions can lag
-implementations; keep accepted design decisions in ADRs.
-
-## Agent skills
-
-### Issue tracker
-
-Track issues and specs in GitHub Issues. Before tracker operations, read
-[the issue tracker conventions](.github/agents/issue-tracker.md).
-
-### Triage labels
-
-Use the five default triage labels. Before triaging, read
-[the label mapping](.github/agents/triage-labels.md).
-
-### Domain docs
-
-Use the single-context layout. Before exploring the codebase, read
-[the domain doc rules](.github/agents/domain.md).
+- **Codebase exploration:** read [the domain doc rules](.github/agents/domain.md)
+  and [GLOSSARY.md](GLOSSARY.md).
+- **GitHub Issues and specs:** read [tracker conventions](.github/agents/issue-tracker.md)
+  before tracker operations.
+- **Triage:** read [the label mapping](.github/agents/triage-labels.md).
