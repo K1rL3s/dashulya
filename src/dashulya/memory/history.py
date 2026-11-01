@@ -14,6 +14,7 @@ from dashulya.domain.memory import (
     OriginalMessage,
     TruncatedThread,
 )
+from dashulya.memory.sql_history import SqlHistory
 from dashulya.memory.store import MessageStore
 
 
@@ -166,6 +167,113 @@ def _reply_context(
     )
 
 
+def _thread_messages(
+    originals: Sequence[OriginalMessage], message_id: int, topic_id: int | None
+) -> tuple[set[str], dict[str, Any]]:
+    anchors = [
+        m
+        for m in originals
+        if m.message_id == message_id and (topic_id is None or m.topic_id == topic_id)
+    ]
+    if len(anchors) > 1:
+        error_message = "Thread anchor is ambiguous across saved collections."
+        raise MemoryInputError(error_message)
+    if not anchors:
+        return set(), {
+            "anchor_message_id": message_id,
+            "root_message_id": None,
+            "root_known": False,
+            "available_messages": 0,
+        }
+    anchor = anchors[0]
+    peers = {
+        m.message_id: m
+        for m in originals
+        if m.collection == anchor.collection and m.topic_id == anchor.topic_id
+    }
+    root = anchor
+    known = True
+    while root.reply_to_id is not None:
+        parent = peers.get(root.reply_to_id)
+        if parent is None or parent.message_id >= root.message_id:
+            known = False
+            break
+        root = parent
+    selected = {root.message_id: root}
+    for candidate in sorted(peers.values(), key=lambda m: m.message_id):
+        if (
+            candidate.reply_to_id is not None
+            and candidate.reply_to_id in selected
+            and candidate.reply_to_id < candidate.message_id
+        ):
+            selected[candidate.message_id] = candidate
+    return {m.source_id for m in selected.values()}, {
+        "anchor_message_id": message_id,
+        "root_message_id": root.message_id,
+        "source_id": root.source_id,
+        "root_known": known,
+        "topic_id": anchor.topic_id,
+        "available_messages": len(selected),
+    }
+
+
+def _validate_selection(
+    action: str,
+    source_id: str | None,
+    min_message_id: int | None,
+    max_message_id: int | None,
+    thread_message_id: int | None,
+    text_offset: int,
+    limit: int,
+    cursor: str | None,
+) -> None:
+    for value in (min_message_id, max_message_id, thread_message_id):
+        if value is not None and (type(value) is not int or value < 1):
+            error_message = "Message ID selectors must be positive integers."
+            raise MemoryInputError(error_message)
+    if (
+        min_message_id is not None
+        and max_message_id is not None
+        and min_message_id > max_message_id
+    ):
+        error_message = "min_message_id must not exceed max_message_id."
+        raise MemoryInputError(error_message)
+    if thread_message_id is not None and source_id is not None:
+        error_message = "Use either source_id or thread_message_id, not both."
+        raise MemoryInputError(error_message)
+    valid_offset = type(text_offset) is int and text_offset >= 0
+    exact_source = (
+        action == "list" and source_id is not None and limit == 1 and cursor is None
+    )
+    if not valid_offset or (text_offset and not exact_source):
+        error_message = "Use a nonnegative text_offset with list, source_id and limit=1 for character continuation."
+        raise MemoryInputError(error_message)
+
+
+def _selection_thread(
+    originals: Sequence[OriginalMessage],
+    source_id: str | None,
+    min_message_id: int | None,
+    max_message_id: int | None,
+    thread_message_id: int | None,
+    topic_id: int | None,
+) -> tuple[set[str] | None, dict[str, Any] | None]:
+    if source_id is None and any(
+        value is not None for value in (min_message_id, max_message_id, thread_message_id)
+    ):
+        chats = {
+            (m.chat_id, m.collection if m.chat_id is None else None) for m in originals
+        }
+        if len(chats) > 1:
+            error_message = "Numeric message ID selection requires one authorized chat."
+            raise MemoryInputError(error_message)
+    return (
+        _thread_messages(originals, thread_message_id, topic_id)
+        if thread_message_id is not None
+        else (None, None)
+    )
+
+
 class CanonicalHistory:
     """Bind canonical source access to one trusted conversation.
 
@@ -177,6 +285,9 @@ class CanonicalHistory:
         self.store = store
         self.access = access
 
+    async def sql(self, query: list[str]) -> dict[str, Any]:
+        return await SqlHistory(self.store.database, self.access).query(query)
+
     async def originals(self, *, chat: str | None = None) -> list[OriginalMessage]:
         self._chat(chat)
         visible = await self.store.originals(self.access, chat=chat)
@@ -184,6 +295,17 @@ class CanonicalHistory:
             error_message = "Unknown saved chat collection within this access scope."
             raise MemoryInputError(error_message)
         return visible
+
+    async def original(self, source_id: str) -> OriginalMessage | None:
+        """Resolve file references through the same fixed authority and cutoff."""
+        return next(
+            (
+                message
+                for message in await self.originals()
+                if message.source_id == source_id
+            ),
+            None,
+        )
 
     def coverage(self, originals: Sequence[OriginalMessage]) -> dict[str, Any]:
         """Describe only supplied, authorized canonical rows, never global index bounds."""
@@ -302,22 +424,24 @@ class CanonicalHistory:
         before: str | None = None,
         chat: str | None = None,
         source_id: str | None = None,
+        min_message_id: int | None = None,
+        max_message_id: int | None = None,
+        thread_message_id: int | None = None,
         cursor: str | None = None,
         offset: int = 0,
+        text_offset: int = 0,
         limit: int = 20,
         topic_id: int | None = None,
         parent_hops: int = 5,
     ) -> dict[str, Any]:
-        """Read originals; after is inclusive and before exclusive, in UTC.
+        """Page originals and full reply threads inside fixed authority/cutoff.
 
-        list pages run backwards and render chronologically. offset skips rows for
-        list, or characters for read. read returns up to 12000 original characters;
-        next_offset reads the remainder. List/context excerpts are capped at1200.
-        Primary filters do not constrain bounded context, which always remains
-        within fixed authority/cutoff, the source chat and an explicit topic selector.
-        list/read expand reply parents only; parent_hops0 leaves just the primaries.
+        Message-ID bounds are inclusive. Date after is inclusive; before exclusive.
+        offset skips rows. A single-item list returns up to 12000 characters;
+        text_offset continues an exact source. Other excerpts remain capped at1200.
+        parent_hops expands ancestors separately from primary matches and counts.
         """
-        if action not in {"list", "read", "count", "authors", "chats"}:
+        if action not in {"list", "count", "authors"}:
             error_message = "Unknown history action."
             raise MemoryInputError(error_message)
         if type(parent_hops) is not int or parent_hops < 0:
@@ -328,12 +452,19 @@ class CanonicalHistory:
                 "Use limit 1-50, a nonnegative offset, and no offset with cursor."
             )
             raise MemoryInputError(error_message)
-        if action == "read" and source_id is None:
-            error_message = "Reading an original requires its source_id."
+        if action != "list" and source_id is not None:
+            error_message = "source_id is supported by list only."
             raise MemoryInputError(error_message)
-        if action != "read" and source_id is not None:
-            error_message = "source_id is supported by read only."
-            raise MemoryInputError(error_message)
+        _validate_selection(
+            action,
+            source_id,
+            min_message_id,
+            max_message_id,
+            thread_message_id,
+            text_offset,
+            limit,
+            cursor,
+        )
         if action != "list" and cursor is not None:
             error_message = "History cursors are supported by list only."
             raise MemoryInputError(error_message)
@@ -343,11 +474,23 @@ class CanonicalHistory:
             error_message = "after must not be later than before."
             raise MemoryInputError(error_message)
         originals = await self.originals(chat=chat)
+        thread_ids, thread = _selection_thread(
+            originals,
+            source_id,
+            min_message_id,
+            max_message_id,
+            thread_message_id,
+            topic_id,
+        )
         identities = {_identity(m) for m in originals if _name_matches(m, name_contains)}
         matched = [
             m
             for m in originals
             if _identity(m) in identities
+            and (source_id is None or m.source_id == source_id)
+            and (min_message_id is None or m.message_id >= min_message_id)
+            and (max_message_id is None or m.message_id <= max_message_id)
+            and (thread_ids is None or m.source_id in thread_ids)
             and self._matches(
                 m,
                 text=text_contains,
@@ -371,35 +514,31 @@ class CanonicalHistory:
                 "before": upper.isoformat() if upper else None,
                 "chat": chat,
                 "topic_id": topic_id,
+                "source_id": source_id,
+                "min_message_id": min_message_id,
+                "max_message_id": max_message_id,
+                "thread_message_id": thread_message_id,
             },
         }
+        if thread is not None:
+            result["thread"] = thread
         if action == "count":
             result.update(
                 count=len(matched),
                 examples=[m.render(max_chars=500) for m in matched[-3:]],
             )
-        elif action == "read":
-            target = next((m for m in matched if m.source_id == source_id), None)
-            context, cuts = _reply_context(
-                [target] if target else [], originals, parent_hops, topic_id=topic_id
-            )
-            result.update(
-                messages=[target.render(offset=offset, max_chars=12000)]
-                if target
-                else [],
-                context=[m.render() for m in context],
-                parent_hops=parent_hops,
-                truncated_threads=cuts,
-                context_note="Context may contain other authors/dates than primary filters; fixed access and snapshot cutoff always apply.",
-            )
-        elif action in {"authors", "chats"}:
-            result.update(self._groups(action, matched, offset, limit))
+        elif action == "authors":
+            result.update(self._authors(matched, offset, limit))
         else:
-            scope = asdict(self.access)
-            scope["before"] = (
-                self.access.before.isoformat() if self.access.before else None
-            )
-            fingerprint = _fingerprint({"access": scope, "filters": result["filters"]})
+            fingerprint = _fingerprint({
+                "access": {
+                    **asdict(self.access),
+                    "before": self.access.before.isoformat()
+                    if self.access.before
+                    else None,
+                },
+                "filters": result["filters"],
+            })
             page = matched
             if cursor is not None:
                 position = _cursor_decode(cursor, fingerprint)
@@ -408,10 +547,18 @@ class CanonicalHistory:
                 page = page[:-offset] if offset < len(page) else []
             chosen = page[-limit:]
             context, cuts = _reply_context(
-                chosen, originals, parent_hops, topic_id=topic_id
+                chosen,
+                originals
+                if thread_ids is None
+                else [m for m in originals if m.source_id in thread_ids],
+                parent_hops,
+                topic_id=topic_id,
             )
             result.update(
-                messages=[m.render() for m in chosen],
+                messages=[
+                    m.render(offset=text_offset, max_chars=12000 if limit == 1 else 1200)
+                    for m in chosen
+                ],
                 context=[m.render() for m in context],
                 parent_hops=parent_hops,
                 truncated_threads=cuts,
@@ -423,37 +570,26 @@ class CanonicalHistory:
         return result
 
     @staticmethod
-    def _groups(
-        action: str, matched: list[OriginalMessage], offset: int, limit: int
+    def _authors(
+        matched: list[OriginalMessage], offset: int, limit: int
     ) -> dict[str, Any]:
         grouped: dict[
-            str | tuple[int | None, str | None, str | None], list[OriginalMessage]
+            tuple[int | None, str | None, str | None], list[OriginalMessage]
         ] = {}
         for message in matched:
-            key = _identity(message) if action == "authors" else message.collection
-            grouped.setdefault(key, []).append(message)
-        rows: list[dict[str, Any]] = []
-        for messages in grouped.values():
-            if action == "authors":
-                rows.append({
-                    "author_id": messages[0].author_id,
-                    "names": sorted({m.author for m in messages}),
-                    "usernames": sorted({m.username for m in messages if m.username}),
-                    "message_count": len(messages),
-                    "examples": [m.render(max_chars=500) for m in messages[-3:]],
-                })
-            else:
-                first = messages[0]
-                rows.append({
-                    "chat": first.collection,
-                    "chat_id": first.chat_id,
-                    "title": first.chat_title,
-                    "username": first.chat_username,
-                    "message_count": len(messages),
-                    "examples": [m.render(max_chars=500) for m in messages[-3:]],
-                })
+            grouped.setdefault(_identity(message), []).append(message)
+        rows: list[dict[str, Any]] = [
+            {
+                "author_id": messages[0].author_id,
+                "names": sorted({m.author for m in messages}),
+                "usernames": sorted({m.username for m in messages if m.username}),
+                "message_count": len(messages),
+                "examples": [m.render(max_chars=500) for m in messages[-3:]],
+            }
+            for messages in grouped.values()
+        ]
         return {
-            action: rows[offset : offset + limit],
+            "authors": rows[offset : offset + limit],
             "total": len(rows),
             "next_offset": offset + limit if len(rows) > offset + limit else None,
         }

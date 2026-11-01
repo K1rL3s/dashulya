@@ -36,7 +36,10 @@ class TestDialogueRecall:
         self.backend = AsyncMock(spec=MemoryBackend)
         self.backend.search.return_value = {"coverage": {}, "hits": []}
         self.reader = AsyncMock(spec=HistoryReader)
-        self.reader.query.return_value = {"count": 1, "coverage": {}}
+        self.reader.sql.return_value = {
+            "query_count": 1,
+            "results": [{"count": 1, "coverage": {}}],
+        }
         container = create_container(
             Settings(bot_token="123:TEST", openai_api_key=TEST_API_KEY, owner_user_id=42),
             MemoryOverride(self.backend, reader=self.reader),
@@ -76,7 +79,7 @@ class TestDialogueRecall:
                     ))
         recall.assert_not_called()
         self.backend.search.assert_not_awaited()
-        self.reader.query.assert_not_awaited()
+        self.reader.sql.assert_not_awaited()
 
     async def test_model_selected_memory_and_history_share_current_trusted_scope(
         self,
@@ -86,7 +89,10 @@ class TestDialogueRecall:
             ToolCallEvent(
                 "search_memory", arguments='{"query":"Что мы решили про RTK?"}'
             ),
-            ToolCallEvent("chat_history", arguments='{"action":"count"}'),
+            ToolCallEvent(
+                "chat_history",
+                arguments='{"sql": ["SELECT count(*) AS count FROM messages"]}',
+            ),
             reply_json("Answer", 999),
         )
         caplog.clear()
@@ -110,7 +116,7 @@ class TestDialogueRecall:
         history.assert_called_once_with(access)
         assert self.backend.search.await_count == 1
         assert self.backend.search.await_args.args[0] == "Что мы решили про RTK?"
-        assert self.reader.query.await_count == 1
+        assert self.reader.sql.await_count == 1
         tools = [
             vars(record)
             for record in caplog.records
@@ -123,14 +129,17 @@ class TestDialogueRecall:
 
     async def test_history_only_request_does_not_invoke_semantic_memory(self) -> None:
         dialogue, _, service = await self.dialogue(
-            ToolCallEvent("chat_history", arguments='{"action":"count"}'),
+            ToolCallEvent(
+                "chat_history",
+                arguments='{"sql": ["SELECT count(*) AS count FROM messages"]}',
+            ),
             reply_json("Counted"),
         )
         with patch.object(
             service, "recall", side_effect=AssertionError("Recall was not requested")
         ):
             assert (await self.reply(dialogue)).messages[0].text == "Counted"
-        self.reader.query.assert_awaited_once()
+        self.reader.sql.assert_awaited_once()
         self.backend.search.assert_not_awaited()
 
     async def test_turn_deadline_cancels_a_selected_memory_tool(self) -> None:

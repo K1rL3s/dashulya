@@ -174,6 +174,35 @@ class TestAgentTracing:
             ]
             assert "PRIVATE" not in json.dumps(events)
 
+    async def test_history_batch_sql_is_correlated_and_credentials_are_redacted(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        queries = [
+            "SELECT count(*) FROM messages",
+            "SELECT 'fixture-credential' AS value",
+        ]
+        call = ToolCallEvent(
+            "chat_history", id="sql-batch", arguments=json.dumps({"sql": queries})
+        )
+        with caplog.at_level("INFO", logger="dashulya.ai.agents.tracing"):
+            await self.trace.on_tool_execution(
+                AsyncMock(return_value=ToolResultEvent.from_call(call, "PRIVATE RESULT")),
+                call,
+                self.context,
+            )
+        records = [
+            json.loads(JsonLogFormatter(secrets=("fixture-credential",)).format(record))
+            for record in caplog.records
+        ]
+        assert len(records) == 2
+        for record in records:
+            assert record["tool_call_id"] == "sql-batch"
+            assert record["query_count"] == 2
+            assert record["chat_id"] == -123
+            assert record["message_id"] == 7
+            assert record["sql"] == [queries[0], "SELECT '<REDACTED>' AS value"]
+        assert "PRIVATE RESULT" not in json.dumps(records)
+
     async def test_tool_exception_and_cancellation_are_traced_and_propagated(
         self,
         caplog: pytest.LogCaptureFixture,

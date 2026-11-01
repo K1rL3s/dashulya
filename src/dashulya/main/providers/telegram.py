@@ -16,6 +16,7 @@ from dashulya.bot.middlewares.memory import (
 from dashulya.bot.reactions import TelegramReactions
 from dashulya.bot.replies import ReplyDelivery
 from dashulya.bot.router import create_router
+from dashulya.bot.stickers import TelegramStickers
 from dashulya.domain.groups import GroupRegistry
 from dashulya.domain.memory import ContextImages, MessageRecorder
 from dashulya.domain.reactions import MessageReactions
@@ -27,6 +28,7 @@ class TelegramProvider(Provider):
 
     tracking = provide(TrackGroupsMiddleware)
     delivery = provide(ReplyDelivery)
+    stickers = provide(TelegramStickers)
     context_images = alias(TelegramImages, provides=ContextImages)
     # AiogramProvider uses Scope.REQUEST; both integrations share AG2Scope here.
     event = from_context(TelegramObject, scope=AG2Scope.REQUEST)

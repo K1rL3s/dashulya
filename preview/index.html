@@ -85,6 +85,11 @@
     .event.current { border-color:#c4b5ef; }
     .event.parent { border-color:#ead6b9; }
     .event.current .event-head { background:#f7f3ff; }
+    .input-part + .input-part { border-top:1px dashed var(--line); }
+    .part-label { display:block; padding:8px 12px 0; color:var(--muted); font:9px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .image-input { margin:10px 12px 12px; padding:18px; border:1px dashed #b9a6e8; border-radius:7px; background:#f7f3ff; color:#7058a0; font-size:12px; }
+    .image-input strong { display:block; font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .image-input small { display:block; margin-top:7px; line-height:1.5; color:var(--muted); }
     .cut-note { background:#fff7e9; border:1px solid #f1dfbf; color:#88632e; border-radius:8px; padding:10px 12px; font-size:11px; line-height:1.6; margin-bottom:13px; }
     .json-tools { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; font-size:11px; color:var(--muted); }
     #json { border:1px solid var(--line); background:white; border-radius:9px; }
@@ -135,7 +140,7 @@
         const bubble=element("div","bubble"); const author=element("div","author",message.author);
         if(message.username) author.append(element("span","handle","@"+message.username.replace(/^@/,""))); if(message.is_self) author.append(element("span","agent-badge","AGENT")); bubble.append(author);
         if(message.reply_to_id) { const parent=lookup.get(message.reply_to_id); const quote=element("button","reply-quote",`↳ #${message.reply_to_id} · ${parent?parent.author+": "+(parent.text||"Attachment"):"Reply to an earlier message"}`); quote.type="button"; quote.dataset.jump=message.reply_to_id; bubble.append(quote); }
-        if(message.media_type) { const media=element("div","media","▧ "+message.media_type); media.append(element("small","","Saved attachment · media bytes are not loaded")); bubble.append(media); }
+        if(message.media_type) { const media=element("div","media","▧ "+message.media_type); media.append(element("small","",message.has_image_reference?"ImageInput placement available · bytes are not loaded":"Saved attachment · no downloadable image reference")); bubble.append(media); }
         if(message.text) bubble.append(element("div","body",message.text));
         if(!message.text&&!message.media_type) bubble.append(element("div","body","[Empty saved message]"));
         const footer=element("div","message-footer"); footer.append(element("span","selection-label"),element("span","","#"+message.id),element("span","",time(message.sent_at,{hour:"2-digit",minute:"2-digit"}))); bubble.append(footer); item.append(bubble); fragment.append(item);
@@ -178,8 +183,23 @@
       const stats=$("stats"); stats.replaceChildren(); for(const [count,label] of [[totalCharacters,"chars"],[result.messages.length,"messages"],[recent,"recent"],[parents,"parents"],[result.events.length,"events"]]) { const part=element("span"); part.append(element("strong","",count.toLocaleString("en-US")),document.createTextNode(" "+label)); if(label==="chars") { part.id="total-characters"; part.title="Characters in all formatted event text, including spaces, newlines and shared metadata."; } stats.append(part); }
       const fragment=document.createDocumentFragment();
       if(result.truncated_threads.length) fragment.append(element("div","cut-note",`${result.truncated_threads.length} reply chain(s) extend past the ${result.parameters.parent_hops}-hop limit. Navigation metadata appears in the boundary messages.`));
+      if(result.image_count) fragment.append(element("div","cut-note",`${result.image_count} ImageInput placeholder(s) follow their source messages. Placement uses the bot's event builder; image bytes are not downloaded. Runtime availability, decoding and the byte budget can produce omission notes instead.`));
       const kinds=new Map(result.messages.map(message=>[message.id,message.selection]));
-      for(const [index,event] of result.events.entries()) { const card=element("div","event "+event.role+" "+(kinds.get(event.message_id)||"")); const head=element("div","event-head"); const size=element("span","event-size",sizes[index].toLocaleString("en-US")+" chars"); size.title="Characters in this event's formatted text, including spaces and newlines."; head.append(element("span","role "+event.role,event.role),element("span","event-kind",event.type),size); if(event.message_id!==null) { const source=element("button","event-source","#"+event.message_id+" ↗"); source.dataset.reveal=event.message_id; head.append(source); } else head.append(element("span","event-label","CHAT")); card.append(head,element("pre","",event.text)); fragment.append(card); }
+      for(const [index,event] of result.events.entries()) {
+        const card=element("div","event "+event.role+" "+(kinds.get(event.message_id)||""));
+        const head=element("div","event-head"); const size=element("span","event-size",sizes[index].toLocaleString("en-US")+" chars"); size.title="Characters in this event's formatted text, including spaces and newlines.";
+        head.append(element("span","role "+event.role,event.role),element("span","event-kind",event.type),size);
+        if(event.message_id!==null) { const source=element("button","event-source","#"+event.message_id+" ↗"); source.dataset.reveal=event.message_id; head.append(source); } else head.append(element("span","event-label","CHAT"));
+        card.append(head);
+        for(const part of event.parts) {
+          const block=element("div","input-part");
+          if(part.type==="ImageInput") {
+            const image=element("div","image-input"); image.append(element("strong","","▧ ImageInput"),element("small","",`Source message #${event.message_id} · detail="high" · placement preview`),element("small","","Image bytes and MIME type are resolved at runtime. No Telegram download in this viewer.")); block.append(image);
+          } else { block.append(element("span","part-label",part.type),element("pre","",part.text)); }
+          card.append(block);
+        }
+        fragment.append(card);
+      }
       $("events-view").replaceChildren(fragment); $("json").textContent=JSON.stringify(result.raw_events,null,2); $("copy").disabled=false; $("empty-context").hidden=true; setView(state.view); $("context-scroll").scrollTop=0;
     }
     function setView(view) { state.view=view; for(const tab of ["events","json"]) { $(tab+"-tab").setAttribute("aria-selected",String(tab===view)); $(tab+"-view").hidden=!state.context||tab!==view; } }
@@ -211,6 +231,7 @@
         state.topic=query.get("topic_id")||"";
         $("chat-title").textContent=state.chat.title||"Unnamed group"; $("chat-title").title=`${state.chat.message_count.toLocaleString()} saved messages · ${state.timezone}`;
         await loadMessages();
+        if(query.has("message_id")) await revealMessage(Number(query.get("message_id")),true);
       } catch(error) { $("messages").replaceChildren(element("div","empty","Could not load saved messages.")); notice(error.message); }
     }
     init();

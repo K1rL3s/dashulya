@@ -19,6 +19,7 @@ from dashulya.ai.dialogue import Dialogue
 from dashulya.bot.images import TelegramImages
 from dashulya.bot.messages import capture_message
 from dashulya.bot.replies import ReplyDelivery
+from dashulya.bot.stickers import TelegramStickers
 from dashulya.domain.memory import ChatHistory, MemoryBackend, MemoryMessage, ReplyContext
 from dashulya.domain.messages import (
     ConversationKey,
@@ -544,6 +545,47 @@ class TestDialogue:
                 )
                 assert event["reply_target_reason"] == reason
 
+    @pytest.mark.parametrize(
+        ("chat_id", "target", "expected"),
+        [(42, 1, None), (-123, 1, 1), (-123, 5, 5), (-123, 999, None)],
+    )
+    async def test_sticker_reply_survives_validation_and_uses_context_target_rules(
+        self, chat_id: int, target: int, expected: int | None
+    ) -> None:
+        self.history.context.return_value = ReplyContext((
+            MemoryMessage(
+                chat_id=-123,
+                message_id=1,
+                text="A selected message",
+                sent_at=SENT_AT,
+                author_id=99,
+                author="Boris",
+                chat_title="Group",
+            ),
+        ))
+        agent = create_reply_agent(
+            TestConfig(
+                json.dumps({
+                    "messages": [
+                        {"text": "", "sticker": "joy", "reply_to_message_id": target}
+                    ]
+                })
+            ),
+            tools=[],
+        )
+        dialogue = Dialogue(agent, history=self.history, bot_id=123)
+        result = await dialogue.reply(
+            ReplyRequest(
+                (chat_id, None),
+                "Congratulations!",
+                user_id=42,
+                user_name="Anna",
+                sent_at=SENT_AT,
+                message_id=5,
+            )
+        )
+        assert result == ReplyBatch((Reply(sticker="joy", reply_to_message_id=expected),))
+
     async def test_private_reply_ignores_model_selected_message_id(self) -> None:
         agent = create_reply_agent(
             TestConfig(reply_json("Private answer", 999)), tools=[]
@@ -659,9 +701,96 @@ class TestDialogue:
         assert [part.data for part in parts if isinstance(part, BinaryInput)] == [
             b"selected"
         ]
-        assert "Attached image from Telegram message ID: 1" in "\n".join(
+        assert "Attached image (untrusted) ID: 1" in "\n".join(
             await self.requests(self.last_stream())
         )
+
+    @pytest.mark.parametrize("assistant", [False, True])
+    @pytest.mark.parametrize("omitted", [False, True])
+    async def test_group_media_stays_with_its_original_message(
+        self, *, assistant: bool, omitted: bool
+    ) -> None:
+        dialogue = Dialogue(self.agent, history=self.history, bot_id=123)
+        self.history.context.return_value = ReplyContext((
+            MemoryMessage(
+                -123,
+                1,
+                "Original caption",
+                SENT_AT,
+                123 if assistant else 99,
+                "Dashulya" if assistant else "Boris",
+                "Group",
+                media_type="photo",
+            ),
+            MemoryMessage(-123, 2, "Intervening text", SENT_AT, 99, "Boris", "Group"),
+        ))
+        await dialogue.reply(
+            ReplyRequest(
+                (-123, None),
+                "Compare these images",
+                user_id=42,
+                user_name="Anna",
+                sent_at=SENT_AT,
+                message_id=3,
+                # Loading priority differs from chronological placement.
+                images=(
+                    ImageAttachment(b"current", "image/png", 3),
+                    ImageOmission(1, "unavailable")
+                    if omitted
+                    else ImageAttachment(b"original", "image/png", 1),
+                    ImageAttachment(b"excluded", "image/png", 999),
+                ),
+            )
+        )
+        events = [
+            event
+            for event in await self.last_stream().history.get_events()
+            if isinstance(event, (ModelRequest, ModelResponse))
+        ]
+        original = events[1]
+        if assistant:
+            assert isinstance(original, ModelResponse)
+            assert original.content is not None
+            original_text = original.content
+        else:
+            assert isinstance(original, ModelRequest)
+            assert isinstance(original.parts[0], TextInput)
+            assert len(original.parts) == (1 if omitted else 2)
+            assert (
+                '\n<external_input source="external_user">\n' in original.parts[0].content
+            )
+            original_text = input_payload(original.parts[0].content)
+        assert "Original caption\n" in original_text
+        if omitted:
+            assert original_text.endswith(
+                "[Image from Telegram message ID: 1 omitted: "
+                "This image could not be downloaded. "
+                "Its contents are unavailable; do not guess what it shows.]"
+            )
+        else:
+            assert original_text.endswith("Attached image (untrusted) ID: 1")
+            media = events[2] if assistant else original
+            assert isinstance(media, ModelRequest)
+            if assistant:
+                assert len(media.parts) == 1
+            assert isinstance(media.parts[-1], BinaryInput)
+            assert media.parts[-1].data == b"original"
+        intervening = events[3 if assistant and not omitted else 2]
+        assert isinstance(intervening, ModelRequest)
+        assert len(intervening.parts) == 1
+        assert isinstance(intervening.parts[0], TextInput)
+        assert "Intervening text" in intervening.parts[0].content
+        current = events[-2]
+        assert isinstance(current, ModelRequest)
+        assert isinstance(current.parts[0], TextInput)
+        assert len(current.parts) == 2
+        assert "Compare these images" in current.parts[0].content
+        assert input_payload(current.parts[0].content).endswith(
+            "Attached image (untrusted) ID: 3"
+        )
+        assert [part.data for part in current.parts if isinstance(part, BinaryInput)] == [
+            b"current"
+        ]
 
     async def test_passively_captured_photo_reaches_later_group_request(self) -> None:
         await self.assert_captured_media_reaches_followup({
@@ -785,7 +914,9 @@ class TestDialogue:
             patch.object(Message, "answer", AsyncMock()),
             patch("dashulya.bot.images.first_frame", return_value=b"frame"),
         ):
-            await ReplyDelivery(bot, dialogue, images).reply(request)
+            await ReplyDelivery(bot, dialogue, images, TelegramStickers(bot)).reply(
+                request
+            )
         parts = [
             part
             for event in await self.last_stream().history.get_events()
@@ -879,7 +1010,9 @@ class TestDialogue:
             patch.object(bot.session, "stream_content", stream),
             patch.object(Message, "answer", AsyncMock()),
         ):
-            await ReplyDelivery(bot, dialogue, images).reply(incoming)
+            await ReplyDelivery(bot, dialogue, images, TelegramStickers(bot)).reply(
+                incoming
+            )
         eager.assert_not_called()
         assert [call.args[0] for call in metadata.await_args_list] == ["current", "older"]
         binary = [
@@ -948,6 +1081,7 @@ class TestDialogue:
         assert "Telegram message ID: 2 omitted" in text
         assert "Telegram did not provide a thumbnail" in text
         assert "too large" not in text
+        assert len(await self.requests(self.last_stream())) == 1
         parts = [
             part
             for event in await self.last_stream().history.get_events()

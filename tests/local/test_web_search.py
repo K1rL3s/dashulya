@@ -40,6 +40,7 @@ class TestWebSearch:
             keenable_api_key="keenable-test-only",  # pragma: allowlist secret -- Fake test key.
         )
         self.requests: list[httpx.Request] = []
+        self.rpc_requests: list[httpx.Request] = []
         self.clients: list[httpx.AsyncClient] = []
         self.http_client_type = httpx.AsyncClient
 
@@ -60,8 +61,12 @@ class TestWebSearch:
         | Callable[[httpx.Request], Coroutine[Any, Any, httpx.Response]],
         *,
         raw_result: bool = False,
+        discovery: Callable[[httpx.Request], httpx.Response]
+        | Callable[[httpx.Request], Coroutine[Any, Any, httpx.Response]]
+        | None = None,
     ) -> Any:
         async def rpc(request: httpx.Request) -> httpx.Response:
+            self.rpc_requests.append(request)
             body = json.loads(request.content)
             method = body["method"]
             if method.startswith("notifications/"):
@@ -72,11 +77,26 @@ class TestWebSearch:
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": "keenable-test", "version": "1"},
                 }
+            elif method == "tools/list" and discovery is not None:
+                response = discovery(request)
+                if isinstance(response, Coroutine):
+                    response = await response
+                if response.status_code != 200:
+                    return response
+                data = response.json()
             elif method == "tools/list":
                 data = {
                     "tools": [
-                        {"name": name, "inputSchema": {"type": "object"}}
-                        for name in ("search_web_pages", "fetch_page_content")
+                        {
+                            "name": name,
+                            "description": "Discovered Keenable tool: " + name,
+                            "inputSchema": {"type": "object"},
+                        }
+                        for name in (
+                            "search_web_pages",
+                            "fetch_page_content",
+                            "private_tool",
+                        )
                     ]
                 }
             else:
@@ -100,7 +120,83 @@ class TestWebSearch:
             self.clients.append(client)
             return client
 
-        return patch("dashulya.ai.tools.web.httpx2.AsyncClient", side_effect=create)
+        return patch(
+            "ag2.tools.toolkits.mcp_server.toolkit.httpx2.AsyncClient", side_effect=create
+        )
+
+    async def test_discovery_is_cached_between_conversations(self) -> None:
+        agent = await self.agent(TestConfig(reply_json("Done")))
+        with self.transport(lambda _: pytest.fail("Unexpected tool execution")):
+            await agent.ask("Hello", stream=MemoryStream())
+            await agent.ask("Hello again", stream=MemoryStream())
+        assert [json.loads(r.content)["method"] for r in self.rpc_requests].count(
+            "tools/list"
+        ) == 1
+        assert len(self.clients) == 1
+        assert self.clients[0].is_closed
+
+    async def test_discovery_failure_allows_replies_and_later_recovers(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        config = TrackingConfig(TestConfig(reply_json("Done")))
+        agent = await self.agent(config)
+        with self.transport(
+            lambda _: pytest.fail("Unexpected tool execution"),
+            discovery=lambda _: httpx.Response(
+                503, json={"error": "PRIVATE PROVIDER BODY keenable-test-only"}
+            ),
+        ):
+            response = await agent.ask("Hello", stream=MemoryStream())
+        assert self.clients[-1].is_closed
+        assert await response.content() is not None
+        assert "PRIVATE PROVIDER BODY" not in repr(config.calls[0])
+        assert not any(
+            isinstance(schema, FunctionToolSchema)
+            and schema.function.name in {"search_web_pages", "fetch_page_content"}
+            for schema in config.calls[0].tools
+        )
+        failure = next(
+            r for r in caplog.records if r.message == "Web tool discovery failed"
+        )
+        for secret in ("PRIVATE PROVIDER BODY", self.settings.keenable_api_key):
+            assert secret not in JsonLogFormatter().format(failure)
+        with self.transport(lambda _: pytest.fail("Unexpected tool execution")):
+            await agent.ask("Try again", stream=MemoryStream())
+        assert any(
+            isinstance(schema, FunctionToolSchema)
+            and schema.function.name == "search_web_pages"
+            for schema in config.calls[-1].tools
+        )
+        assert all(client.is_closed for client in self.clients)
+
+    async def test_model_cannot_override_provider_limits_or_mutate_history(self) -> None:
+        original = {
+            "query": "public facts",
+            "max_results": 100,
+            "snippet_max_length": 100_000,
+            "output_format": "text",
+            "unexpected": "PRIVATE CONTEXT",
+        }
+        call = ToolCallEvent("search_web_pages", arguments=json.dumps(original))
+        agent = await self.agent(TestConfig(call, reply_json("Done")))
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            self.requests.append(request)
+            return httpx.Response(200, json={"results": []})
+
+        stream = MemoryStream()
+        with self.transport(respond):
+            await agent.ask("Find", stream=stream)
+        assert json.loads(self.requests[0].content)["params"]["arguments"] == {
+            "query": "public facts",
+            "max_results": 5,
+            "snippet_max_length": SEARCH_TEXT_CHARACTERS,
+            "output_format": "json",
+        }
+        recorded = next(
+            e for e in await stream.history.get_events() if isinstance(e, ToolCallEvent)
+        )
+        assert recorded.serialized_arguments == original
 
     async def results(self, stream: MemoryStream) -> list[ToolResultEvent]:
         return [
@@ -187,7 +283,10 @@ class TestWebSearch:
             assert len(str(page[field])) == limit
             assert page[field] == page_text[:limit]
             assert page["truncated"]
-        assert len(self.clients) == 2
+        assert len(self.clients) == 3
+        assert [json.loads(r.content)["method"] for r in self.rpc_requests].count(
+            "tools/list"
+        ) == 3  # Discovery plus the SDK's output-schema lookup in each call session.
         assert all(client.is_closed for client in self.clients)
 
     async def test_only_reply_agent_receives_web_tools_and_key_stays_out_of_schema(
@@ -198,7 +297,8 @@ class TestWebSearch:
             with subtests.test(enabled=enabled):
                 config = TrackingConfig(TestConfig(reply_json("Done")))
                 agent = await self.agent(config, enabled=enabled)
-                await agent.ask("Hello")
+                with self.transport(lambda _: httpx.Response(200, json={"results": []})):
+                    await agent.ask("Hello")
                 tools = [
                     schema.function.name
                     for schema in config.calls[0].tools
@@ -208,6 +308,18 @@ class TestWebSearch:
                 assert "chat_history" in tools
                 assert ("search_web_pages" in tools) == enabled
                 assert ("fetch_page_content" in tools) == enabled
+                if enabled:
+                    schema = next(
+                        s
+                        for s in config.calls[0].tools
+                        if isinstance(s, FunctionToolSchema)
+                        and s.function.name == "search_web_pages"
+                    )
+                    assert (
+                        schema.function.description
+                        == "Discovered Keenable tool: search_web_pages"
+                    )
+                assert "private_tool" not in tools
                 assert "exa_search" not in tools
                 assert "exa_get_contents" not in tools
                 assert self.settings.keenable_api_key not in repr(config.calls[0])
@@ -508,9 +620,11 @@ class TestWebSearch:
                     )
                 )
                 stream = MemoryStream()
-                with patch("dashulya.ai.tools.web.httpx2.AsyncClient") as sdk:
+                self.requests.clear()
+                with self.transport(
+                    lambda _: pytest.fail("Invalid arguments reached Keenable")
+                ):
                     await agent.ask("Find", stream=stream)
-                sdk.assert_not_called()
                 assert isinstance((await self.results(stream))[0], ToolErrorEvent)
                 (failure,) = [
                     record
@@ -570,8 +684,9 @@ class TestWebSearch:
                 assert len(results) == 1
                 assert not isinstance(results[0], ToolErrorEvent)
 
+    @pytest.mark.parametrize("during_discovery", [False, True])
     async def test_timeout_and_cancellation_close_the_mcp_client(
-        self, subtests: pytest.Subtests
+        self, subtests: pytest.Subtests, during_discovery: bool
     ) -> None:
         for cancel in (False, True):
             with subtests.test(cancel=cancel):
@@ -590,18 +705,21 @@ class TestWebSearch:
                         interrupted.set()
                     return httpx.Response(200, json={"results": []})
 
-                agent = await self.agent(
-                    TestConfig(
+                config = TestConfig(reply_json("Unavailable."))
+                if not during_discovery:
+                    config = TestConfig(
                         ToolCallEvent(
                             "search_web_pages", arguments='{"query":"public facts"}'
                         ),
                         reply_json("Unavailable."),
                         raise_tool_errors=False,
                     )
-                )
+                agent = await self.agent(config)
                 stream = MemoryStream()
                 with (
-                    self.transport(respond),
+                    self.transport(
+                        respond, discovery=respond if during_discovery else None
+                    ),
                     patch(
                         "dashulya.ai.tools.web.WEB_TIMEOUT_SECONDS",
                         10 if cancel else 0.05,
@@ -615,7 +733,10 @@ class TestWebSearch:
                             await task
                     else:
                         await asyncio.wait_for(task, timeout=2)
-                        results = await self.results(stream)
-                        assert "timed out" in repr(results)
+                        if during_discovery:
+                            assert await self.results(stream) == []
+                        else:
+                            results = await self.results(stream)
+                            assert "timed out" in repr(results)
                 assert interrupted.is_set()
                 assert self.clients[-1].is_closed

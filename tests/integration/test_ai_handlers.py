@@ -9,15 +9,28 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from ag2 import Agent
 from aiogram import Bot, Dispatcher
-from aiogram.methods import SendMessage, SendRichMessage, TelegramMethod
-from aiogram.types import File, Message, Update, User
+from aiogram.methods import (
+    GetStickerSet,
+    SendMessage,
+    SendRichMessage,
+    SendSticker,
+    TelegramMethod,
+)
+from aiogram.types import File, Message, StickerSet, Update, User
 
 from dashulya.database import Database
 from dashulya.domain.groups import Group
 from dashulya.domain.memory import MessageRecorder
-from dashulya.domain.messages import ImageOmission, Reply, ReplyBatch, ReplyRequest
+from dashulya.domain.messages import (
+    ImageFile,
+    ImageOmission,
+    Reply,
+    ReplyBatch,
+    ReplyRequest,
+)
 from dashulya.main import create_container
 from dashulya.main.config import Settings
+from dashulya.memory.store import MessageStore
 from dashulya.observability import JsonLogFormatter
 from dashulya.storage.groups import GroupStore
 from tests.support import (
@@ -26,6 +39,7 @@ from tests.support import (
     DecisionOverride,
     DialogueOverride,
     RecorderOverride,
+    dashulya_sticker_set,
     input_payload,
 )
 
@@ -117,8 +131,11 @@ class _AIHandlerFixture:
 
     async def request(
         self, bot: Bot, method: TelegramMethod[Any], **kwargs: Any
-    ) -> Message | bool:
-        if isinstance(method, (SendMessage, SendRichMessage)):
+    ) -> Message | StickerSet | bool:
+        if isinstance(method, GetStickerSet):
+            assert method.name == "DashulyaAI"
+            return dashulya_sticker_set()
+        if isinstance(method, (SendMessage, SendRichMessage, SendSticker)):
             self.sent_id += 1
             return Message.model_validate({
                 "message_id": self.sent_id,
@@ -126,6 +143,13 @@ class _AIHandlerFixture:
                 "chat": GROUP if method.chat_id == GROUP["id"] else PRIVATE,
                 "from": BOT_USER,
                 "text": method.text if isinstance(method, SendMessage) else None,
+                "sticker": next(
+                    sticker
+                    for sticker in dashulya_sticker_set().stickers
+                    if sticker.file_id == method.sticker
+                ).model_dump()
+                if isinstance(method, SendSticker)
+                else None,
             })
         return True
 
@@ -171,6 +195,55 @@ class _AIHandlerFixture:
 
 
 class TestAIHandler(_AIHandlerFixture):
+    @pytest.mark.parametrize("group", [False, True])
+    async def test_sticker_reply_is_delivered_and_recorded_with_original_metadata(
+        self, group: bool
+    ) -> None:
+        store = MessageStore(self.database)
+        self.recorder.record.side_effect = store.record
+        self.dialogue.reply.return_value = ReplyBatch((Reply(sticker="skeptical"),))
+        await self.message(
+            "@dashulya_bot really?",
+            chat={**GROUP, "is_forum": True} if group else PRIVATE,
+            message_thread_id=7 if group else None,
+            is_topic_message=group,
+            entities=[{"type": "mention", "offset": 0, "length": len("@dashulya_bot")}],
+        )
+        sent = [
+            call.args[1]
+            for call in self.requests.call_args_list
+            if isinstance(call.args[1], SendSticker)
+        ]
+        assert len(sent) == 1
+        assert sent[0].sticker == "skeptical-file"
+        assert sent[0].reply_parameters is not None
+        assert sent[0].reply_parameters.message_id == 1
+        assert sent[0].message_thread_id == (7 if group else None)
+        saved = [
+            call.args[0]
+            for call in self.recorder.record.await_args_list
+            if call.args[0].author_id == BOT_USER["id"]
+        ]
+        assert len(saved) == 1
+        original = saved[0]
+        assert original.chat_id == (GROUP["id"] if group else PRIVATE["id"])
+        assert original.message_id == 1001
+        assert original.sent_at == datetime.fromtimestamp(1700000000, UTC)
+        assert original.reply_to_id == 1
+        assert original.thread_id == (7 if group else None)
+        assert original.media_type == "sticker"
+        assert original.text == ""
+        assert original.is_bot is True
+        assert original.image_file == ImageFile("skeptical-file")
+        context = await store.context(
+            (original.chat_id, original.thread_id),
+            original.message_id,
+            limit=20,
+            parent_hops=5,
+        )
+        assert context.messages[-1] == original
+        assert self.replies() == []
+
     async def test_private_text_invokes_dialogue_and_replies_as_plain_text(self) -> None:
         await self.message("Hi")
         self.dialogue.reply.assert_awaited_once_with(

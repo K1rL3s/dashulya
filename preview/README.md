@@ -2,7 +2,7 @@
 
 A local prototype for exploring which saved group messages enter one request's
 reply context, and how those messages become AG2 events. It uses the real
-`Dialogue.select_context()` and `MessageFormatter.events()` implementations.
+`Dialogue.select_context()` and `Dialogue.context_events()` implementations.
 
 From the project root, with the existing Compose PostgreSQL service running:
 
@@ -19,8 +19,18 @@ event message IDs navigate to their saved originals. The **JSON** tab shows
 the same events as a copyable JSON array. Both panes fill the window, with no
 global header or filter toolbar.
 
+Events show their ordered parts: one `TextInput` with
+`Attached image (untrusted) ID: <message ID>` appended to its original text,
+then an `ImageInput` placeholder in the same card. This bot's images appear in
+a separate user event immediately after its assistant event. Placeholder images
+use saved file references and the bot's shared event builder without downloading
+bytes; actual availability, decoding and byte-budget omissions are not simulated.
+The JSON view explicitly marks unloaded bytes and unknown MIME types.
+
 Each event shows a local day and author declaration where first applicable,
-then a time/JSON metadata line and the exact original text. This bot has no
+then a time/JSON metadata line. All of that metadata precedes `external_input`;
+only the source text and attached-media notes are inside the envelope. The shared
+chat header has no envelope. This bot has no
 author declaration because its assistant role identifies it. Only the last
 record includes `Interlocutor user id`. Later author aliases update the
 declaration where observed, preserving earlier records. Truncated-chain
@@ -47,11 +57,13 @@ including legacy reply threads. Set it only when simulating a forum topic;
 General is topic 1. The database does
 not retain Telegram's `is_forum` flag, so the preview does not guess it from old
 thread IDs. Only numerically bound group collections are shown.
+Add `message_id` to open and select a saved message directly.
 
 The preview reads current saved originals, not historical edit versions. It
-shows the message context and AG2 text events, excluding global agent prompts,
-tool definitions/results and native image bytes. Media remain labeled
-placeholders; there are no Telegram downloads or model calls. Bot messages can
+shows the message context and AG2 event parts, excluding global agent prompts,
+tool definitions/results and native image bytes. Media with saved file references
+show image-placement placeholders; older attachments without references remain
+text placeholders. There are no Telegram downloads or model calls. Bot messages can
 also be selected for inspection, although they do not trigger bot replies in
 the real Telegram router. This is a local inspection tool, not a public app.
 

@@ -5,13 +5,14 @@ from contextlib import AsyncExitStack
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from ag2 import Agent, MemoryStream
 from ag2.events import ToolCallEvent, ToolResultEvent
 from ag2.testing import TestConfig, TrackingConfig
 from aiogram import Bot
+from aiogram.types import File
 from dishka import Provider, make_async_container, provide
 from dishka_ag2 import AG2Provider, AG2Scope
 
@@ -27,8 +28,10 @@ from dashulya.domain.memory import (
     MemoryAccess,
     MemoryBackend,
     MemoryMessage,
+    OriginalMessage,
+    message_source_id,
 )
-from dashulya.domain.messages import ReplyBatch, ReplyRequest
+from dashulya.domain.messages import ImageFile, ReplyBatch, ReplyRequest
 from dashulya.main.config import IMAGE_MAX_BYTES, Settings
 from dashulya.main.providers.ai import AgentProvider
 from dashulya.memory.history import CanonicalHistory
@@ -58,14 +61,14 @@ class _Recall:
         limit: int = 3,
     ) -> dict[str, Any]:
         result = await self.reader.query(
-            "read" if memory_id else "list",
+            "list",
             text_contains=query,
             source_id=memory_id,
             chat=chat,
             author_id=author_id,
             after=after,
             before=before,
-            limit=limit,
+            limit=1 if memory_id else limit,
         )
         return {"coverage": result["coverage"], "hits": result["messages"]}
 
@@ -119,6 +122,178 @@ class _Dependencies(Provider):
 
 @pytest.mark.usefixtures("_setup")
 class TestMemoryAccessIntegration:
+    async def test_group_tool_lists_id_ranges_threads_and_author_date_filters(
+        self,
+    ) -> None:
+        for number, parent in (
+            (10, None),
+            (11, 10),
+            (12, 11),
+            (13, None),
+            (14, 10),
+            (15, 14),
+            (16, 13),
+        ):
+            await self.live.record(
+                MemoryMessage(
+                    GROUP,
+                    number,
+                    f"Discussion {number}",
+                    NOW - timedelta(seconds=1),
+                    11 if number == 12 else 10,
+                    "Alex",
+                    "Group",
+                    reply_to_id=parent,
+                )
+            )
+        await self.live.record(
+            MemoryMessage(
+                OTHER,
+                12,
+                "Foreign branch",
+                NOW - timedelta(seconds=1),
+                11,
+                "Other",
+                "Other",
+            )
+        )
+        container, _ = self.container(
+            ToolCallEvent(
+                "chat_history",
+                arguments='{"sql": ["SELECT * FROM messages WHERE message_id >= 10 AND message_id <= 13 ORDER BY message_id LIMIT 20"]}',
+            ),
+            ToolCallEvent(
+                "chat_history",
+                arguments='{"sql": ["WITH RECURSIVE ancestors AS (SELECT message_id, reply_to_message_id, topic_id FROM messages WHERE message_id = 12 UNION ALL SELECT m.message_id, m.reply_to_message_id, m.topic_id FROM messages m JOIN ancestors a ON m.message_id = a.reply_to_message_id AND m.message_id < a.message_id AND m.topic_id IS NOT DISTINCT FROM a.topic_id), thread AS (SELECT m.* FROM messages m WHERE m.message_id = (SELECT min(message_id) FROM ancestors) UNION ALL SELECT m.* FROM messages m JOIN thread t ON m.reply_to_message_id = t.message_id AND m.message_id > t.message_id AND m.topic_id IS NOT DISTINCT FROM t.topic_id) SELECT * FROM thread ORDER BY message_id LIMIT 50"]}',
+            ),
+            ToolCallEvent(
+                "chat_history",
+                arguments="{\"sql\": [\"SELECT count(*) AS count FROM messages WHERE author_id = 11 AND sent_at >= '2026-10-25T14:59:58+03:00' AND sent_at < '2026-10-25T15:00:00+03:00'\"]}",
+            ),
+            reply_json("Done"),
+        )
+        stream = MemoryStream()
+        agent = await container.get(Agent[ReplyBatch])
+        await agent.ask(
+            "Read this group's discussion",
+            stream=stream,
+            dependencies={
+                "memory_access": MemoryAccess(GROUP, False, before=NOW, before_id=99)
+            },
+        )
+        interval, thread, count = [
+            memory_tool_data(result) for result in await self.results(stream)
+        ]
+        for result, expected in (
+            (interval, [10, 11, 12, 13]),
+            (thread, [10, 11, 12, 14, 15]),
+        ):
+            block = result["rows"]
+            assert [row["message_id"] for row in block] == expected
+            assert "Foreign branch" not in str(result)
+        assert count["rows"][0]["count"] == 1
+
+    async def test_history_image_read_uses_trusted_group_scope_and_snapshot(self) -> None:
+        for number in range(10, 31):
+            await self.live.record(
+                MemoryMessage(
+                    GROUP,
+                    number,
+                    "Recent message",
+                    NOW - timedelta(seconds=1),
+                    10,
+                    "Alex",
+                    "Group",
+                )
+            )
+        for chat_id in (GROUP, OTHER):
+            await self.live.record(
+                MemoryMessage(
+                    chat_id,
+                    2,
+                    "Saved photo",
+                    NOW - timedelta(seconds=1),
+                    10,
+                    "Alex",
+                    str(chat_id),
+                    media_type="photo",
+                    image_file=ImageFile(f"photo:{chat_id}"),
+                )
+            )
+        await self.live.record(
+            MemoryMessage(
+                GROUP,
+                3,
+                "Future photo",
+                NOW + timedelta(seconds=1),
+                10,
+                "Alex",
+                "Group",
+                media_type="photo",
+                image_file=ImageFile("future-photo"),
+            )
+        )
+        references = [
+            message_source_id(f"telegram:{chat}", number)
+            for chat, number in ((OTHER, 2), (GROUP, 3), (GROUP, 2))
+        ]
+        container, _ = self.container(
+            *(
+                ToolCallEvent(
+                    "chat_history",
+                    arguments=json.dumps({
+                        "sql": [
+                            f"SELECT * FROM messages WHERE source_id = '{reference}' ORDER BY message_id LIMIT 1"
+                        ]
+                    }),
+                )
+                for reference in references
+            ),
+            reply_json("Done", 2),
+        )
+        bot = await container.get(Bot)
+        dialogue = await container.get(Dialogue)
+        agent = await container.get(Agent[ReplyBatch])
+        image = b"\x89PNG\r\n\x1a\nimage-data"
+
+        async def content(*args: Any, **kwargs: Any) -> AsyncIterator[bytes]:
+            yield image
+
+        with (
+            patch.object(
+                bot,
+                "get_file",
+                AsyncMock(
+                    return_value=File(
+                        file_id="photo", file_unique_id="unique", file_path="photo.png"
+                    )
+                ),
+            ) as metadata,
+            patch.object(bot.session, "stream_content", content),
+            patch.object(agent, "ask", wraps=agent.ask) as ask,
+        ):
+            result = await dialogue.reply(
+                ReplyRequest(
+                    (GROUP, None),
+                    "Find the old photo",
+                    user_id=42,
+                    user_name="Owner",
+                    sent_at=NOW,
+                    message_id=99,
+                )
+            )
+        results = await self.results(ask.call_args.kwargs["stream"])
+        assert memory_tool_data(results[0])["rows"] == []
+        assert memory_tool_data(results[1])["rows"] == []
+        assert len(results[2].result.parts) == 2
+        metadata.assert_awaited_once_with(f"photo:{GROUP}")
+        assert result.messages[0].reply_to_message_id is None
+        reader = self.service.history(
+            MemoryAccess(GROUP, False, before=NOW, before_id=99)
+        )
+        assert await reader.original(references[0]) is None
+        assert await reader.original(references[1]) is None
+
     @pytest.fixture
     async def _setup(self, database: Database, cleanup: AsyncExitStack) -> None:
         self.database = database
@@ -165,7 +340,10 @@ class TestMemoryAccessIntegration:
     ) -> None:
         container, config = self.container(
             ToolCallEvent("search_memory", arguments='{"query":"source"}'),
-            ToolCallEvent("chat_history", arguments='{"action":"list"}'),
+            ToolCallEvent(
+                "chat_history",
+                arguments='{"sql": ["SELECT * FROM messages ORDER BY message_id LIMIT 20"]}',
+            ),
             reply_json("Done"),
         )
         agent = await container.get(Agent[ReplyBatch])
@@ -209,7 +387,11 @@ class TestMemoryAccessIntegration:
             ),
             ToolCallEvent(
                 "chat_history",
-                arguments=json.dumps({"action": "read", "source_id": source_id}),
+                arguments=json.dumps({
+                    "sql": [
+                        f"SELECT * FROM messages WHERE source_id = '{source_id}' ORDER BY message_id LIMIT 1"
+                    ]
+                }),
             ),
             reply_json("Unavailable"),
         )
@@ -224,7 +406,7 @@ class TestMemoryAccessIntegration:
         rendered = str(data)
         assert "Foreign secret" not in rendered
         assert data[0]["hits"] == []
-        assert data[1]["messages"] == []
+        assert data[1]["rows"] == []
 
     async def test_missing_or_forged_trusted_dependency_fails_closed(
         self, subtests: pytest.Subtests
@@ -236,7 +418,10 @@ class TestMemoryAccessIntegration:
         ):
             with subtests.test(access=access):
                 container, _ = self.container(
-                    ToolCallEvent("chat_history", arguments='{"action":"count"}'),
+                    ToolCallEvent(
+                        "chat_history",
+                        arguments='{"sql": ["SELECT count(*) AS count FROM messages"]}',
+                    ),
                     reply_json("Done"),
                 )
                 agent = await container.get(Agent[ReplyBatch])
@@ -249,9 +434,15 @@ class TestMemoryAccessIntegration:
         self,
     ) -> None:
         container, config = self.container(
-            ToolCallEvent("chat_history", arguments='{"action":"count"}'),
+            ToolCallEvent(
+                "chat_history",
+                arguments='{"sql": ["SELECT count(*) AS count FROM messages"]}',
+            ),
             reply_json("Done"),
-            ToolCallEvent("chat_history", arguments='{"action":"count"}'),
+            ToolCallEvent(
+                "chat_history",
+                arguments='{"sql": ["SELECT count(*) AS count FROM messages"]}',
+            ),
             reply_json("Done"),
         )
         dialogue = await container.get(Dialogue)
@@ -284,9 +475,15 @@ class TestMemoryAccessIntegration:
 
     async def test_turn_scopes_are_separate_even_when_agent_is_shared(self) -> None:
         container, _ = self.container(
-            ToolCallEvent("chat_history", arguments='{"action":"list"}'),
+            ToolCallEvent(
+                "chat_history",
+                arguments='{"sql": ["SELECT * FROM messages ORDER BY message_id LIMIT 20"]}',
+            ),
             reply_json("First"),
-            ToolCallEvent("chat_history", arguments='{"action":"list"}'),
+            ToolCallEvent(
+                "chat_history",
+                arguments='{"sql": ["SELECT * FROM messages ORDER BY message_id LIMIT 20"]}',
+            ),
             reply_json("Second"),
         )
         agent = await container.get(Agent[ReplyBatch])
@@ -315,13 +512,22 @@ class TestMemoryAccessIntegration:
             def __init__(self, access: MemoryAccess) -> None:
                 self.reader = original_history(access)
 
-            async def query(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            async def sql(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
                 await barrier.wait()
-                return await self.reader.query(*args, **kwargs)
+                return await self.reader.sql(*args, **kwargs)
+
+            async def original(self, source_id: str) -> OriginalMessage | None:
+                return await self.reader.original(source_id)
 
         container, _ = self.container(
-            ToolCallEvent("chat_history", arguments='{"action":"list"}'),
-            ToolCallEvent("chat_history", arguments='{"action":"list"}'),
+            ToolCallEvent(
+                "chat_history",
+                arguments='{"sql": ["SELECT * FROM messages ORDER BY message_id LIMIT 20"]}',
+            ),
+            ToolCallEvent(
+                "chat_history",
+                arguments='{"sql": ["SELECT * FROM messages ORDER BY message_id LIMIT 20"]}',
+            ),
             reply_json("First"),
             reply_json("Second"),
         )
@@ -356,7 +562,10 @@ class TestMemoryAccessIntegration:
 
     async def test_model_variables_cannot_replace_hidden_group_authority(self) -> None:
         container, _ = self.container(
-            ToolCallEvent("chat_history", arguments='{"action":"list"}'),
+            ToolCallEvent(
+                "chat_history",
+                arguments='{"sql": ["SELECT * FROM messages ORDER BY message_id LIMIT 20"]}',
+            ),
             reply_json("Done"),
         )
         agent = await container.get(Agent[ReplyBatch])
@@ -395,12 +604,15 @@ class TestMemoryAccessIntegration:
         assert "Sender is bot:" not in rendered
         assert "User 100:" in rendered
         assert "@agent_name, bot" in rendered
-        assert context[-1]["text"].startswith('<external_input source="bot">')
+        assert (
+            '\n<external_input source="bot">\nA bot assertion\n</external_input>'
+            in (context[-1]["text"])
+        )
         assert "username: unknown" not in rendered
         assert "Foreign secret" not in rendered
         assert config.calls == []
 
-    async def test_model_chat_narrowing_and_identity_lookup_are_real_tool_parameters(
+    async def test_model_chat_is_session_bound_and_identity_lookup_is_available(
         self,
     ) -> None:
         await self.live.record(
@@ -418,15 +630,11 @@ class TestMemoryAccessIntegration:
         container, config = self.container(
             ToolCallEvent(
                 "search_memory",
-                arguments=json.dumps({"query": "source", "chat": f"telegram:{GROUP}"}),
+                arguments=json.dumps({"query": "source"}),
             ),
             ToolCallEvent(
                 "chat_history",
-                arguments=json.dumps({
-                    "action": "authors",
-                    "chat": f"telegram:{GROUP}",
-                    "name_contains": "@DISTINCT_HANDLE",
-                }),
+                arguments='{"sql": ["SELECT author_id, author, username, count(*) AS message_count FROM messages WHERE username ILIKE \'%DISTINCT_HANDLE%\' GROUP BY author_id, author, username ORDER BY author_id LIMIT 20"]}',
             ),
             reply_json("Done"),
         )
@@ -435,7 +643,7 @@ class TestMemoryAccessIntegration:
         await agent.ask(
             "Question",
             stream=stream,
-            dependencies={"memory_access": MemoryAccess(42, True)},
+            dependencies={"memory_access": MemoryAccess(GROUP, False)},
         )
         results = await self.results(stream)
         first = memory_tool_data(results[0])
@@ -446,5 +654,6 @@ class TestMemoryAccessIntegration:
         assert "Distinct name" in str(lookup)
         assert "Foreign secret" not in str(lookup)
         schemas = [asdict(schema) for schema in config.calls[0].tools]
-        assert "chat" in schemas[0]["function"]["parameters"]["properties"]
-        assert "name_contains" in schemas[1]["function"]["parameters"]["properties"]
+        assert "chat" not in schemas[0]["function"]["parameters"]["properties"]
+        assert "chat" not in schemas[1]["function"]["parameters"]["properties"]
+        assert set(schemas[1]["function"]["parameters"]["properties"]) == {"sql"}

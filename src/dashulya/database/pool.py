@@ -3,12 +3,13 @@
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
+
+from .migrate import require_schema
 
 
 class Database:
@@ -30,17 +31,12 @@ class Database:
                 return
             try:
                 await self.pool.open(wait=True, timeout=15)
-                await self._initialize_schema()
+                async with self.pool.connection() as connection:
+                    await require_schema(connection)
                 self._ready = True
             except BaseException:
                 await self.pool.close()
                 raise
-
-    async def _initialize_schema(self) -> None:
-        schema = await asyncio.to_thread(Path(__file__).with_name("schema.sql").read_text)
-        async with self.pool.connection() as connection, connection.transaction():
-            await connection.execute("SELECT pg_advisory_xact_lock(489627301)")
-            await connection.execute(schema)
 
     @asynccontextmanager
     async def connection(self) -> AsyncGenerator[AsyncConnection[dict[str, Any]], None]:

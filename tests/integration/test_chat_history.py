@@ -109,7 +109,7 @@ class TestCanonicalHistory:
         assert len({m["source_id"] for m in private["messages"]}) == 3
         secret = next(m for m in private["messages"] if m["chat_id"] == 42)
         assert secret["url"] is None
-        assert (await self.group.query("read", source_id=secret["source_id"]))[
+        assert (await self.group.query("list", limit=1, source_id=secret["source_id"]))[
             "messages"
         ] == []
         with pytest.raises(ValueError, match="outside"):
@@ -149,7 +149,7 @@ class TestCanonicalHistory:
         bodies = {1: "A nonempty original", 2: "", 3: "Длинный текст " * 100}
         for mid, text in bodies.items():
             await self.live.record(self.message(mid, text=text))
-        for action in ("count", "authors", "chats"):
+        for action in ("count", "authors"):
             result = await self.group.query(action)
             if action == "count":
                 assert result["count"] == 3
@@ -265,7 +265,9 @@ class TestCanonicalHistory:
         )
         original = (
             await reader.query(
-                "read", source_id=(await reader.query())["messages"][0]["source_id"]
+                "list",
+                limit=1,
+                source_id=(await reader.query())["messages"][0]["source_id"],
             )
         )["messages"][0]
         await self.live.record(
@@ -278,7 +280,7 @@ class TestCanonicalHistory:
         with patch.object(
             self.live, "pending", side_effect=RuntimeError("Knowledge unavailable")
         ) as pending:
-            result = await reader.query("read", source_id=original["source_id"])
+            result = await reader.query("list", limit=1, source_id=original["source_id"])
         pending.assert_not_called()
         assert result["messages"][0]["text"] == "Corrected canonical original"
         assert result["messages"][0]["provenance"] == "live"
@@ -341,7 +343,8 @@ class TestCanonicalHistory:
             await reader.query(text_contains="Yes", author_id=10, after=NOW.isoformat())
         )["messages"][0]
         result = await reader.query(
-            "read",
+            "list",
+            limit=1,
             source_id=target["source_id"],
             text_contains="Yes",
             author_id=10,
@@ -368,7 +371,7 @@ class TestCanonicalHistory:
         chunks = []
         for _ in range((len(body) + 11999) // 12000):
             page = await self.group.query(
-                "read", source_id=target["source_id"], offset=offset
+                "list", limit=1, source_id=target["source_id"], text_offset=offset
             )
             record = page["messages"][0]
             assert record["offset"] == offset, "Read ignored the requested offset"
@@ -398,10 +401,7 @@ class TestCanonicalHistory:
         await self.live.record(
             self.message(1, chat_id=OTHER, author_id=10, author="Alex renamed")
         )
-        for action, key, identities in (
-            ("authors", "author_id", {10, 11}),
-            ("chats", "chat", {f"telegram:{GROUP}", f"telegram:{OTHER}"}),
-        ):
+        for action, key, identities in (("authors", "author_id", {10, 11}),):
             first = await self.private.query(action, limit=1)
             assert first["total"] == 2
             assert len(first[action]) == 1
@@ -412,16 +412,9 @@ class TestCanonicalHistory:
             assert last["next_offset"] is None
             rows = first[action] + last[action]
             assert {row[key] for row in rows} == identities
-            if action == "authors":
-                author = next(a for a in rows if a["author_id"] == 10)
-                assert author["names"] == ["Alex", "Alex renamed"]
-                assert author["message_count"] == 2
-            else:
-                assert {row["chat"]: row["chat_id"] for row in rows} == {
-                    f"telegram:{GROUP}": GROUP,
-                    f"telegram:{OTHER}": OTHER,
-                }
-        assert (await self.group.query("chats"))["total"] == 1
+            author = next(a for a in rows if a["author_id"] == 10)
+            assert author["names"] == ["Alex", "Alex renamed"]
+            assert author["message_count"] == 2
         assert (await self.group.query())["messages"][0]["is_bot"] is None
 
     async def test_optional_sender_metadata_does_not_replace_chat_username(self) -> None:
@@ -484,7 +477,7 @@ class TestCanonicalHistory:
                 await self.group.query(cursor=value)
         for arguments in (
             {"action": "read"},
-            {"source_id": "source:unknown:1"},
+            {"action": "count", "source_id": "source:unknown:1"},
             {"limit": 0},
             {"offset": -1},
             {"action": "unknown"},

@@ -8,6 +8,7 @@ from psycopg import AsyncConnection, sql
 from psycopg.conninfo import make_conninfo
 
 from dashulya.database import Database
+from dashulya.database.migrate import migrate
 from tests.postgres import require_database_url
 
 
@@ -33,6 +34,7 @@ async def database(schema: str, database_url: str) -> AsyncIterator[Database]:
             sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema))
         )
     try:
+        await migrate(database_url)
         database = Database(database_url)
         try:
             await database.open()

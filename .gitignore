@@ -41,4 +41,8 @@ dist/
 .DS_Store
 .idea/
 
+# Keep exported stickers and prompts; full-size generations and bundles stay local.
+/assets/stickers/**/sources/
+/assets/stickers/**/*.zip
+
 .agents

@@ -35,7 +35,9 @@ from dashulya.domain.messages import Reply, ReplyBatch, ReplyRequest
 from dashulya.main import create_container
 from dashulya.main.config import Settings
 from dashulya.memory._recall import ScopedRecall
+from dashulya.memory._selection import RecallSelection
 from dashulya.memory.history import CanonicalHistory
+from dashulya.memory.sql_history import validate_query
 from dashulya.memory.store import MessageStore
 from tests.support import (
     TEST_API_KEY,
@@ -44,6 +46,7 @@ from tests.support import (
     group_records,
     group_rows,
     input_payload,
+    memory_tool_data,
     reply_json,
 )
 
@@ -153,6 +156,12 @@ class TestToolMessageFormat:
         assert "42: Alice (@alice)" in block["text"]
         assert "User 123:" not in block["text"]
         assert group_records(block["text"])[1]["role"] == "assistant"
+        first_record = block["text"].split("\n===\n")[1]
+        header = first_record.split("\n<external_input", 1)[0]
+        assert "26 October 2026 (Monday)" in header
+        assert "User 42: Alice (@alice)" in header
+        assert '00:01:00 {"id":1,"user_id":42}' in header
+        assert input_payload(first_record) == "Original 1"
         assert "Europe/Moscow" not in block["text"]
         assert "26 October 2026 (Monday)" in block["text"]
         assert "DUPLICATE RETRIEVAL PAYLOAD" not in json.dumps(result)
@@ -178,7 +187,7 @@ class TestToolMessageFormat:
                 {"messages": [first], "next_cursor": "opaque", "matching_count": 9},
             ),
             (
-                "read",
+                "list",
                 {"messages": [original().render()], "context": [original(2).render()]},
                 {"messages": [first], "context": [second]},
             ),
@@ -206,15 +215,6 @@ class TestToolMessageFormat:
                     "next_offset": 1,
                 },
             ),
-            (
-                "chats",
-                {
-                    "chats": [
-                        {"chat": "telegram:-100123", "examples": [original().render()]}
-                    ]
-                },
-                {"chats": [{"chat": "telegram:-100123", "examples": [first]}]},
-            ),
         ]
         for action, body, expected in cases:
             with subtests.test(action=action):
@@ -226,7 +226,7 @@ class TestToolMessageFormat:
                     "filters": {"author_id": 42},
                     **expected,
                 }
-                numbers = [1, 2] if action == "read" else [1]
+                numbers = [1, 2] if "context" in body else [1]
                 assert block == {
                     "chat": "telegram:-100123",
                     "chat_id": -100123,
@@ -403,33 +403,39 @@ class TestToolMessageRoundtrip:
         [
             (
                 "chat_history",
-                {"action": "read"},
-                "Reading an original requires its source_id.",
-                {"action": "list"},
-            ),
-            (
-                "search_memory",
-                {"query": "original", "chat": "telegram:-100456"},
-                "Chat selector is outside this conversation's memory access.",
-                {"query": ""},
+                {"sql": "PRIVATE QUERY"},
+                "sql: list_type",
+                {"sql": ["SELECT * FROM messages"]},
             ),
             (
                 "chat_history",
-                {"after": "PRIVATE INVALID DATE"},
-                "History dates must use ISO 8601 with a timezone.",
-                {"action": "list"},
+                {"sql": []},
+                "sql: too_short",
+                {"sql": ["SELECT * FROM messages"]},
+            ),
+            (
+                "chat_history",
+                {"sql": ["SELECT 1"] * 6},
+                "sql: too_long",
+                {"sql": ["SELECT * FROM messages"]},
+            ),
+            (
+                "search_memory",
+                {"query": "original", "author_id": "PRIVATE INVALID INTEGER"},
+                "author_id: int_parsing",
+                {"query": ""},
             ),
             (
                 "search_memory",
                 {"memory_id": "source:missing:1", "before": "PRIVATE INVALID DATE"},
-                "Search dates must use ISO 8601 with a timezone.",
+                "before: datetime_from_date_parsing",
                 {"query": ""},
             ),
             (
-                "chat_history",
-                {"limit": "PRIVATE INVALID INTEGER"},
-                "limit: int_parsing",
-                {"action": "list"},
+                "search_memory",
+                {"memory_id": "source:missing:1", "before": "2026-10-25T12:00:00"},
+                "Search dates must include a timezone.",
+                {"query": ""},
             ),
         ],
     )
@@ -444,8 +450,18 @@ class TestToolMessageRoundtrip:
         access = MemoryAccess(-100123, False)
         store = AsyncMock(spec=MessageStore)
         store.originals.return_value = []
-        reader = CanonicalHistory(store, access)
-        backend = ScopedRecall(reader, AsyncMock())
+        canonical = CanonicalHistory(store, access)
+        backend = ScopedRecall(canonical, AsyncMock())
+        selection = AsyncMock(spec=RecallSelection)
+        selection.coverage.return_value = canonical.coverage([])
+        reader = AsyncMock(spec=HistoryReader)
+
+        async def query(sql: list[str]) -> dict[str, Any]:
+            for item in sql:
+                validate_query(item)
+            return {"results": [{"rows": []}]}
+
+        reader.sql.side_effect = query
         container = create_container(
             Settings(bot_token="123:TEST", openai_api_key=TEST_API_KEY, owner_user_id=42),
             MemoryOverride(backend, reader=reader),
@@ -466,9 +482,10 @@ class TestToolMessageRoundtrip:
         self.cleanup.push_async_callback(container.close)
         agent = await container.get(Agent[ReplyBatch])
         stream = MemoryStream()
-        response = await agent.ask(
-            "Read originals", stream=stream, dependencies={"memory_access": access}
-        )
+        with patch("dashulya.memory._recall.RecallSelection", return_value=selection):
+            response = await agent.ask(
+                "Read originals", stream=stream, dependencies={"memory_access": access}
+            )
         assert (await response.content()) == ReplyBatch((Reply("Done"),))
         error, recovered = [
             event
@@ -485,7 +502,8 @@ class TestToolMessageRoundtrip:
         assert "PRIVATE" not in part.content
         assert not isinstance(recovered, ToolErrorEvent)
         assert recovered.parent_id == "recovery-call"
-        assert store.originals.await_count == 1
+        assert selection.coverage.await_count == (1 if name == "search_memory" else 0)
+        store.originals.assert_not_awaited()
         (failure,) = [
             record
             for record in caplog.records
@@ -546,7 +564,7 @@ class TestToolMessageRoundtrip:
             "hits": [{"kind": "message", "sources": sources, "context": []}]
         }
         reader = AsyncMock(spec=HistoryReader)
-        reader.query.return_value = {"messages": sources}
+        reader.sql.return_value = {"query_count": 1, "results": [{"rows": sources}]}
         container = create_container(
             Settings(bot_token="123:TEST", openai_api_key=TEST_API_KEY, owner_user_id=42),
             MemoryOverride(backend, reader=reader),
@@ -556,7 +574,8 @@ class TestToolMessageRoundtrip:
                         "search_memory", arguments='{"query":"original","user_id":123}'
                     ),
                     ToolCallEvent(
-                        "chat_history", arguments='{"action":"list","user_id":123}'
+                        "chat_history",
+                        arguments='{"sql": ["SELECT * FROM messages ORDER BY message_id LIMIT 20"], "user_id": 123}',
                     ),
                     reply_json("Done"),
                 ),
@@ -584,7 +603,7 @@ class TestToolMessageRoundtrip:
                 if isinstance(event, ToolResultEvent)
             ]
             assert len(events) == 2
-            for event in events:
+            for event in events[:1]:
                 data = next(
                     json.loads(input_payload(part.content))
                     for part in event.result.parts
@@ -610,10 +629,11 @@ class TestToolMessageRoundtrip:
         ).render()
         backend.search.return_value["hits"][0]["sources"].append(channel)
         reader = AsyncMock(spec=HistoryReader)
-        reader.query.return_value = {
-            "messages": [original().render(), channel],
-            "next_cursor": "opaque",
-            "coverage": {"complete": False},
+        reader.sql.return_value = {
+            "query_count": 1,
+            "results": [
+                {"rows": [original().render(), channel], "coverage": {"complete": False}}
+            ],
         }
         settings = Settings(
             bot_token="123:TEST",
@@ -628,7 +648,8 @@ class TestToolMessageRoundtrip:
                 reply=TestConfig(
                     ToolCallEvent("search_memory", arguments='{"query":"original"}'),
                     ToolCallEvent(
-                        "chat_history", arguments='{"action":"list","parent_hops":3}'
+                        "chat_history",
+                        arguments='{"sql": ["SELECT * FROM messages ORDER BY message_id LIMIT 20"]}',
                     ),
                     reply_json("Done"),
                 ),
@@ -651,10 +672,7 @@ class TestToolMessageRoundtrip:
             if isinstance(event, ToolResultEvent)
         ]
         assert len(events) == 2
-        assert reader.query.await_args.kwargs["parent_hops"] == 3
-        for event, raw in zip(
-            events, [backend.search.return_value, reader.query.return_value], strict=True
-        ):
+        for event, raw in zip(events[:1], [backend.search.return_value], strict=True):
             data = next(
                 json.loads(input_payload(part.content))
                 for part in event.result.parts
@@ -666,10 +684,12 @@ class TestToolMessageRoundtrip:
         backend.search.assert_awaited_once_with(
             "original",
             memory_id=None,
-            chat=None,
             author_id=None,
             after=None,
             before=None,
             limit=8,
         )
-        reader.query.assert_awaited_once()
+        reader.sql.assert_awaited_once_with([
+            "SELECT * FROM messages ORDER BY message_id LIMIT 20"
+        ])
+        assert memory_tool_data(events[1]) == reader.sql.return_value["results"][0]

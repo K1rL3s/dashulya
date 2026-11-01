@@ -1,6 +1,7 @@
 """Scoped runtime retrieval through the same service the tools consume."""
 
 import asyncio
+import json
 from contextlib import AsyncExitStack
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -9,10 +10,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from dashulya.database import Database
-from dashulya.domain.memory import MemoryAccess, MemoryMessage
+from dashulya.domain.memory import MemoryAccess, MemoryMessage, OriginalMessage
+from dashulya.memory._selection import RecallSelection
 from dashulya.memory.service import HybridChatMemory
 from dashulya.memory.store import MessageStore
 from dashulya.memory.vectors import EmbeddingCache
+from dashulya.observability import JsonLogFormatter
 
 NOW = datetime(2026, 10, 25, tzinfo=UTC)
 
@@ -111,6 +114,181 @@ class TestMemoryService:
         scope = MemoryAccess(-1001, False, before=NOW + timedelta(hours=1), before_id=100)
         result = await self.service.recall(scope).search("Aurora")
         assert [s["message_id"] for hit in result["hits"] for s in hit["sources"]] == [1]
+
+    async def test_parallel_searches_share_snapshot_without_serializing_embeddings(
+        self,
+    ) -> None:
+        await self.live.record(self.message(-1001, "Aurora source"))
+        await self.service.refresh_once()
+        all_started, release = asyncio.Event(), asyncio.Event()
+        started = 0
+
+        async def embedding(texts: list[str]) -> list[list[float]]:
+            nonlocal started
+            started += 1
+            if started == 4:
+                all_started.set()
+            await release.wait()
+            return [[1.0] + [0.0] * 511 for _ in texts]
+
+        self.embed.side_effect = embedding
+        recall = self.service.recall(MemoryAccess(-1001, False))
+        searches = [
+            asyncio.create_task(recall.search(f"Aurora query {i}")) for i in range(4)
+        ]
+        try:
+            await asyncio.wait_for(all_started.wait(), timeout=2)
+            searches[0].cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await searches[0]
+            await self.service.refresh_once()
+            closing = asyncio.create_task(self.service.close())
+            await asyncio.sleep(0)
+            assert not closing.done()
+        finally:
+            release.set()
+            results = await asyncio.gather(*searches, return_exceptions=True)
+        assert all(isinstance(result, dict) for result in results[1:])
+        await asyncio.wait_for(closing, timeout=2)
+
+    async def test_search_filters_before_loading_text_and_keeps_separate_context(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        parent = self.message(-1001, "Parent proposal", number=1)
+        selected = replace(
+            self.message(-1001, "Aurora decision", number=2),
+            author_id=20,
+            sent_at=NOW + timedelta(minutes=1),
+            reply_to_id=1,
+        )
+        for message in (
+            parent,
+            selected,
+            replace(
+                self.message(-1001, "Nearby explanation", number=3),
+                sent_at=NOW + timedelta(minutes=2),
+            ),
+            replace(
+                self.message(-1001, "Unrelated old message", number=4),
+                sent_at=NOW - timedelta(days=30),
+            ),
+            self.message(-1002, "Foreign secret"),
+            replace(
+                self.message(-1001, "Later edit", number=5),
+                edited_at=NOW + timedelta(hours=2),
+            ),
+        ):
+            await self.live.record(message)
+        await self.service.refresh_once()
+        access = MemoryAccess(-1001, False, before=NOW + timedelta(hours=1))
+        with (
+            patch.object(
+                self.live, "originals", side_effect=AssertionError("Full history loaded")
+            ),
+            caplog.at_level("INFO", logger="dashulya.memory._timing"),
+        ):
+            result = await self.service.recall(access).search(
+                "Aurora",
+                author_id=20,
+                after=selected.sent_at.isoformat(),
+                before=selected.sent_at.isoformat(),
+            )
+        assert result["coverage"]["source_count"] == 1
+        assert result["coverage"]["available_messages"] == 4
+        assert [s["message_id"] for hit in result["hits"] for s in hit["sources"]] == [2]
+        assert {m["message_id"] for m in result["hits"][0]["context"]} == {1, 3}
+        assert "Foreign secret" not in str(result)
+        assert "Later edit" not in str(result)
+        record = next(r for r in caplog.records if r.message == "Memory search completed")
+        logged = json.loads(JsonLogFormatter().format(record))
+        assert logged["outcome"] == "ok"
+        assert logged["search_metrics"]["candidate_count"] == 1
+        assert logged["search_metrics"]["loaded_originals"] == 2
+        assert {
+            "selection_ms",
+            "lexical_search_ms",
+            "query_embedding_ms",
+            "context_ms",
+        } <= logged["search_metrics"].keys()
+        assert "Parent proposal" not in str(logged)
+
+    async def test_filtered_blocks_reuse_saved_vectors_and_preserve_reply_context(
+        self,
+    ) -> None:
+        for number in range(1, 10):
+            await self.live.record(
+                replace(
+                    self.message(-1001, f"Aurora source {number}", number=number),
+                    author_id=20 if number == 8 else 42,
+                    sent_at=NOW + timedelta(minutes=number),
+                    reply_to_id=number - 1 if number > 1 else None,
+                )
+            )
+        await self.service.refresh_once()
+        access = MemoryAccess(-1001, False, before=NOW + timedelta(minutes=9))
+        history = self.service.history(access)
+        originals = await history.originals()
+        target = next(m for m in originals if m.message_id == 8)
+        expected = [m.render(max_chars=3000) for m in history.related(target, originals)]
+        self.embed.reset_mock()
+        result = await self.service.recall(access).search("Aurora", author_id=20)
+        assert result["coverage"]["source_count"] == 1
+        assert result["coverage"]["embedded_blocks"] == 1
+        assert result["coverage"]["pending_blocks"] == 0
+        assert result["hits"][0]["context"] == expected
+        assert [s["message_id"] for s in result["hits"][0]["sources"]] == [8]
+        self.embed.assert_awaited_once_with(["Aurora"])
+
+    async def test_parallel_lexical_searches_prepare_missing_postings(self) -> None:
+        await self.live.record(self.message(-1001, "Aurora durable storage"))
+        await self.live.record(
+            replace(self.message(-1001, "Aurora delivery", number=2), author_id=20)
+        )
+        recall = self.service.recall(MemoryAccess(-1001, False))
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                recall.search("Aurora"),
+                recall.search("Aurora", author_id=20),
+                recall.search("Aurora", author_id=42),
+                recall.search("storage"),
+            ),
+            timeout=2,
+        )
+        assert [len(result["hits"]) for result in results] == [2, 1, 1, 1]
+        assert [s["message_id"] for s in results[1]["hits"][0]["sources"]] == [2]
+        self.embed.assert_not_awaited()
+
+    async def test_shutdown_waits_for_supporting_context_loading(self) -> None:
+        await self.live.record(self.message(-1001, "Aurora source"))
+        await self.service.refresh_once()
+        started, release = asyncio.Event(), asyncio.Event()
+        real_context = RecallSelection.context
+
+        async def context(
+            selection: RecallSelection,
+            targets: list[OriginalMessage],
+            *,
+            chat: str | None,
+        ) -> list[OriginalMessage]:
+            started.set()
+            await release.wait()
+            return await real_context(selection, targets, chat=chat)
+
+        with patch.object(RecallSelection, "context", new=context):
+            search = asyncio.create_task(
+                self.service.recall(MemoryAccess(-1001, False)).search("Aurora")
+            )
+            try:
+                await asyncio.wait_for(started.wait(), timeout=2)
+                closing = asyncio.create_task(self.service.close())
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                assert not closing.done()
+            finally:
+                release.set()
+                await asyncio.wait_for(search, timeout=2)
+                await asyncio.wait_for(closing, timeout=2)
 
     async def test_shutdown_drains_recall_across_refresh_and_rejects_new_searches(
         self,

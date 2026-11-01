@@ -188,6 +188,10 @@ class MemoryAccess:
 class HistoryReader(Protocol):
     """Read canonical originals within hidden conversation authority."""
 
+    async def original(self, source_id: str) -> OriginalMessage | None: ...
+
+    async def sql(self, query: list[str]) -> dict[str, Any]: ...
+
     async def query(
         self,
         action: str = "list",
@@ -200,8 +204,12 @@ class HistoryReader(Protocol):
         before: str | None = None,
         chat: str | None = None,
         source_id: str | None = None,
+        min_message_id: int | None = None,
+        max_message_id: int | None = None,
+        thread_message_id: int | None = None,
         cursor: str | None = None,
         offset: int = 0,
+        text_offset: int = 0,
         limit: int = 20,
         topic_id: int | None = None,
         parent_hops: int = 5,
@@ -221,8 +229,9 @@ class ContextImages(Protocol):
 
     async def load_context(
         self,
-        messages: tuple[MemoryMessage, ...],
+        messages: tuple[MemoryMessage | OriginalMessage, ...],
         *,
         images: tuple[ImageAttachment | ImageOmission, ...] = (),
         request_message_id: int | None = None,
+        max_bytes: int | None = None,
     ) -> tuple[ImageAttachment | ImageOmission, ...]: ...

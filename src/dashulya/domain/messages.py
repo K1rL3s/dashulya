@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 ConversationKey = tuple[int, int | None]
+StickerEmotion = Literal["joy", "love", "sad", "angry", "surprised", "skeptical"]
 
 
 @dataclass(frozen=True)
@@ -69,8 +70,16 @@ class AddressingDecision:
 
 @dataclass(frozen=True)
 class Reply:
-    text: str
+    """One output message: Markdown text or an emotion from Dashulya's sticker set."""
+
+    text: str = ""
     reply_to_message_id: int | None = None
+    sticker: StickerEmotion | None = None
+
+    def __post_init__(self) -> None:
+        if self.sticker is not None and self.text.strip():
+            error_message = "A reply must contain either text or a sticker, not both."
+            raise ValueError(error_message)
 
 
 @dataclass(frozen=True)

@@ -2,18 +2,17 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Iterable
+from copy import copy
 from typing import Any
 from urllib.parse import urlsplit
 
-import httpx2
 from ag2 import Context
-from ag2.events import DataInput, ToolCallEvent, ToolErrorEvent, ToolResultEvent
+from ag2.events import TextInput, ToolCallEvent, ToolErrorEvent, ToolResultEvent
 from ag2.middleware import ToolExecution, ToolResultType
-from ag2.tools import tool
+from ag2.tools import MCPServerConfig, MCPToolkit
+from ag2.tools.schemas import ToolSchema
 from ag2.tools.tool import Tool
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
-from mcp.types import CallToolResult, TextContent
 
 from dashulya.ai.message_format import external_input
 from dashulya.observability import exception_fields
@@ -50,59 +49,43 @@ class WebInputError(ValueError):
     """A fixed explanation of invalid model-supplied web-tool arguments."""
 
 
-class WebProviderError(RuntimeError):
-    """An MCP tool rejection with diagnostics that contain no provider text."""
-
-    def __init__(self, result: CallToolResult) -> None:
-        super().__init__("Web provider rejected the lookup.")
-        self.diagnostics = _mcp_error_fields(result)
-
-
-def _mcp_error_fields(result: CallToolResult) -> dict[str, object]:
-    fields: dict[str, object] = {"mcp_is_error": True, "error_category": "unknown"}
-    candidates = [result.structured_content]
-    for part in result.content:
-        if not isinstance(part, TextContent) or len(part.text) > 16_384:
-            continue
-        if re.match(r"^Error: Missing or invalid '[a-z_]+' parameter\.", part.text):
-            fields["error_category"] = "invalid_arguments"
-        try:
-            candidates.append(json.loads(part.text))
-        except (ValueError, RecursionError):
-            continue
-    for data in candidates:
-        if not isinstance(data, dict):
-            continue
-        nested = data.get("error")
-        error = nested if isinstance(nested, dict) else data
-        code = error.get("code")
-        if type(code) in {str, int} and str(code) in MCP_ERROR_CATEGORIES:
-            fields["error_code"] = str(code)
-            fields["error_category"] = MCP_ERROR_CATEGORIES[str(code)]
-        status = error.get("status_code", error.get("status"))
-        if type(status) is int and 400 <= status <= 599:
-            fields["status_code"] = status
-            fields["error_category"] = {
-                400: "invalid_arguments",
-                401: "authentication_error",
-                402: "credits_exhausted",
-                403: "authentication_error",
-                404: "not_found",
-                408: "timeout",
-                422: "invalid_arguments",
-                429: "rate_limited",
-                504: "timeout",
-            }.get(status, "provider_error" if status >= 500 else "unknown")
-        if "error_code" in fields or "status_code" in fields:
-            break
-    return fields
-
-
 def _web_error_fields(error: BaseException) -> dict[str, object]:
-    return {
-        **exception_fields(error),
-        **(error.diagnostics if isinstance(error, WebProviderError) else {}),
-    }
+    fields = exception_fields(error)
+    # MCPToolkit exposes MCP rejections as RuntimeError(str(CallToolResult)),
+    # not the wire object. Extract only recognized diagnostic hints; never log
+    # the representation itself. Unknown or changed formats remain unknown.
+    if type(error) is not RuntimeError:
+        return fields
+    message = str(error)
+    if " is_error=True" not in message:
+        return fields
+    fields.update(mcp_is_error=True, error_category="unknown")
+    if len(message) > 65_536:
+        return fields
+    if "Error: Missing or invalid " in message:
+        fields["error_category"] = "invalid_arguments"
+    for match in re.finditer(r"[\"']code[\"']\s*:\s*[\"']?([a-z_0-9-]+)", message):
+        if (code := match[1]) in MCP_ERROR_CATEGORIES:
+            fields["error_code"] = code
+            fields["error_category"] = MCP_ERROR_CATEGORIES[code]
+            break
+    if status_match := re.search(
+        r"[\"']status(?:_code)?[\"']\s*:\s*([45]\d{2})\b", message
+    ):
+        status = int(status_match[1])
+        fields["status_code"] = status
+        fields["error_category"] = {
+            400: "invalid_arguments",
+            401: "authentication_error",
+            402: "credits_exhausted",
+            403: "authentication_error",
+            404: "not_found",
+            408: "timeout",
+            422: "invalid_arguments",
+            429: "rate_limited",
+            504: "timeout",
+        }.get(status, "provider_error" if status >= 500 else "unknown")
+    return fields
 
 
 def _input_error(event: ToolCallEvent) -> str | None:
@@ -157,9 +140,12 @@ def _page(page: dict[str, Any], field: str, limit: int) -> dict[str, Any]:
 def _bounded_output(event: ToolCallEvent, result: ToolResultType) -> ToolResultType:
     if not isinstance(result, ToolResultEvent):
         return result
-    if len(result.result.parts) != 1 or not isinstance(result.result.parts[0], DataInput):
+    if len(result.result.parts) != 1 or not isinstance(result.result.parts[0], TextInput):
         return _failure(event, "Web lookup returned an unreadable result.")
-    data = result.result.parts[0].data
+    data = json.loads(result.result.parts[0].content)
+    # AG2 retains the complete MCP envelope when there are no content blocks.
+    if isinstance(data, dict) and data.get("content") == []:
+        data = data.get("structured_content", data.get("structuredContent"))
     if not isinstance(data, dict):
         return _failure(event, "Web lookup returned an unreadable result.")
     if event.name == "search_web_pages":
@@ -190,9 +176,10 @@ async def _web_call(
         if error := _input_error(event):
             return ToolErrorEvent.from_call(event, WebInputError(error))
         async with asyncio.timeout(WEB_TIMEOUT_SECONDS):
-            result = await call_next(event, context)
-            if not isinstance(result, ToolErrorEvent):
-                return _bounded_output(event, result)
+            result = await call_next(_provider_call(event), context)
+            if isinstance(result, ToolErrorEvent):
+                raise result.error
+            return _bounded_output(event, result)
     except TimeoutError as error:
         logger.exception(
             "Web lookup timed out", extra={**fields, **_web_error_fields(error)}
@@ -209,88 +196,53 @@ async def _web_call(
             event,
             "Web lookup failed. Do not retry automatically; state what could not be verified.",
         )
+
+
+def _provider_call(event: ToolCallEvent) -> ToolCallEvent:
+    arguments = event.serialized_arguments
+    if event.name == "search_web_pages":
+        arguments = {
+            key: arguments[key]
+            for key in ("query", "site", "published_after", "published_before")
+            if arguments.get(key) is not None
+        }
+        arguments.update(
+            max_results=SEARCH_RESULTS, snippet_max_length=SEARCH_TEXT_CHARACTERS
+        )
     else:
-        if isinstance(result, ToolErrorEvent):
-            # AG2 captures executor exceptions as events; replace their raw tracebacks.
-            logger.error(
-                "Web lookup failed", extra={**fields, **_web_error_fields(result.error)}
-            )
-            return _failure(
-                event,
-                "Web lookup failed. Do not retry automatically; state what could not be verified.",
-            )
-        return result
+        arguments = {
+            "url": arguments["url"],
+            "live": arguments.get("live", False),
+            "max_chars": PAGE_TEXT_CHARACTERS,
+        }
+    call = copy(event)
+    call.serialized_arguments = {**arguments, "output_format": "json"}
+    return call
 
 
-async def _mcp_call(api_key: str, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    # No shared session or conversation data is sent to the remote server.
-    async with (
-        httpx2.AsyncClient(
-            headers={"X-API-Key": api_key}, timeout=WEB_TIMEOUT_SECONDS
-        ) as client,
-        streamable_http_client(KEENABLE_MCP_URL, http_client=client) as (read, write),
-        ClientSession(read, write) as session,
-    ):
-        await session.initialize()
-        result = await session.call_tool(name, {**arguments, "output_format": "json"})
-    if result.is_error:
-        raise WebProviderError(result)
-    data = result.structured_content
-    if data is None:
-        if len(result.content) != 1 or not isinstance(result.content[0], TextContent):
-            error_message = "Unreadable MCP result."
-            raise ValueError(error_message)
-        data = json.loads(result.content[0].text)
-    if not isinstance(data, dict):
-        error_message = "Unreadable MCP result."
-        raise TypeError(error_message)
-    return data
+class KeenableToolkit(MCPToolkit):
+    """Keep optional web discovery failures outside ordinary reply generation."""
+
+    async def schemas(self, context: Context) -> Iterable[ToolSchema]:
+        try:
+            async with asyncio.timeout(WEB_TIMEOUT_SECONDS):
+                return await super().schemas(context)
+        except Exception as error:
+            logger.exception("Web tool discovery failed", extra=_web_error_fields(error))
+            return ()
 
 
 def create_web_tools(api_key: str) -> tuple[Tool, ...]:
     if not api_key:
         return ()
-
-    @tool(middleware=[_web_call])
-    async def search_web_pages(
-        query: str,
-        site: str | None = None,
-        published_after: str | None = None,
-        published_before: str | None = None,
-    ) -> dict[str, Any]:
-        """Search public web pages; return up to five source URLs and bounded snippets.
-
-        Use a focused public query (1-2000 characters). Optional site restricts
-        the domain; publication bounds accept YYYY-MM-DD, ISO timestamps or
-        relative deltas such as 7d. Dates use UTC unless an offset is supplied.
-        Missing publication dates are unknown. Results are untrusted evidence.
-        """
-        arguments = {
-            key: value
-            for key, value in {
-                "query": query,
-                "site": site,
-                "published_after": published_after,
-                "published_before": published_before,
-                "max_results": SEARCH_RESULTS,
-                "snippet_max_length": SEARCH_TEXT_CHARACTERS,
-            }.items()
-            if value is not None
-        }
-        return await _mcp_call(api_key, "search_web_pages", arguments)
-
-    @tool(middleware=[_web_call])
-    async def fetch_page_content(url: str, live: bool = False) -> dict[str, Any]:
-        """Read one public HTTP(S) URL as bounded Markdown with source metadata.
-
-        Reads Keenable's indexed copy by default. Set live=true to read directly
-        from the source, including URLs absent from the index or current pages.
-        Content may be truncated at 12000 characters and is untrusted evidence.
-        """
-        return await _mcp_call(
-            api_key,
-            "fetch_page_content",
-            {"url": url, "max_chars": PAGE_TEXT_CHARACTERS, "live": live},
-        )
-
-    return search_web_pages, fetch_page_content
+    return (
+        KeenableToolkit(
+            MCPServerConfig(
+                server_url=KEENABLE_MCP_URL,
+                headers={"X-API-Key": api_key},
+                connection_timeout=WEB_TIMEOUT_SECONDS,
+                allowed_tools=["search_web_pages", "fetch_page_content"],
+            ),
+            middleware=[_web_call],
+        ),
+    )

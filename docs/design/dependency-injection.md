@@ -41,7 +41,9 @@ observed group migrations, membership changes, persistent activation, and bounde
 group-list output.
 `storage.groups.GroupStore` implements the asynchronous `GroupRepository` using
 PostgreSQL. `DatabaseProvider` owns the single application-scoped async pool,
-initializes its schema and closes it after dependent resources are finalized.
+verifies its migration journal and closes it after dependent resources are finalized.
+The separate `main.migrations` entry point applies versioned SQL under an
+administrative connection; the runtime login performs no schema setup.
 The domain provider aliases the registry implementation to its interface.
 
 `MessageStore` implements `MessageRecorder` and `ChatHistory`. Imported and
@@ -61,7 +63,7 @@ Startup attempts preparation; provider failures retain queued work. Finalization
 cancels/joins the worker first, then drains active retrieval leases before the
 client and database pool close. Completed batches and pending revisions survive
 restarts. SQL operations use async pooled connections; only
-metadata construction/fingerprinting runs in CPU threads. Ranking uses native
+metadata construction runs in CPU threads. Ranking uses native
 pgvector and SQL BM25, then bounded RRF in Python. Cancelled SQL returns its
 connection safely to the pool.
 
@@ -122,9 +124,12 @@ The reply-agent factory also attaches `ReplyTrace` middleware for correlated
 model/tool timings, outcomes and token counts. It reads trusted `MemoryAccess`
 through an AG2 `Inject` annotation and records raw model output before validation,
 its message count when readable, and the number of tool calls. Input conversation
-bodies and tool arguments/results stay excluded; credential redaction also covers
-model output. Tool failures include full structured exception
-chains and stack frames. Invalid arguments use warning level; provider, database
+bodies and tool results stay excluded; credential redaction also covers
+model output and explicitly logged history SQL. Other tool arguments stay excluded.
+History-call events include the SQL list and call ID. The SQL adapter logs
+individual query indexes, batch IDs, trusted request IDs, timings, outcomes and
+returned row counts without selected data. Tool failures include full structured
+exception chains and stack frames. Invalid arguments use warning level; provider, database
 and unexpected failures use error level. Successful and cancelled calls use info
 level. Before a memory-tool error reaches
 model input, the middleware replaces AG2's raw traceback with a plain string:
@@ -135,7 +140,8 @@ event for framework error handling; only the string result is sent to the model.
 an automatic recall; the agent chooses which tools to call.
 
 The reply agent has an AG2 `ResponseSchema[ReplyBatch]` for up to three ordered
-`messages`, each a `Reply` with `text` and nullable `reply_to_message_id`.
+`messages`, each a `Reply` with `text`, nullable `sticker` emotion and nullable
+`reply_to_message_id`.
 `Dialogue` validates each parsed target against the same group-context snapshot
 that seeded the stream; private replies retain the default target. The result
 crosses into `bot` as the domain's `ReplyBatch`, with no AG2 objects. Delivery
@@ -145,6 +151,16 @@ Schema validation failures log error types and field paths without input values
 or a model retry. Generated/delivered events record message counts; delivery
 also records confirmed Telegram chunks and distinguishes rendering from send
 failures.
+
+Both model-facing memory tools omit the `chat` selector and keep their scope
+bound through `MemoryAccess`. A single-row result within a `chat_history(sql=[...])`
+batch can resolve the selected original's private file references through `HistoryReader.original()`, which
+reuses the scoped canonical reader and cutoff. It returns the original's image
+or preview as native AG2 tool-result media through the shared `ContextImages`
+adapter. `Dialogue` supplies a fresh `HistoryImageTurn` dependency for every ask;
+it accounts for retained/current images and serializes subsequent image reads
+within the remaining budget. Private stream eviction also handles tool-result
+images. These reads grant neither cross-chat authority nor new reply targets.
 
 All reactions, including those on the triggering message, use the injected
 `ai/tools/reactions.py` tool. The application-scoped `TelegramReactions`
@@ -173,24 +189,41 @@ rejection. The agent can correct the call or explain the
 failure itself; delivery adds no canned reaction error response. Reactions
 create no synthetic delivered text messages in chat history.
 
-When `KEENABLE_API_KEY` is configured, `AgentProvider` also registers the
-`search_web_pages` and `fetch_page_content` wrappers assembled by `ai/tools/web.py`.
-They call `https://api.keenable.ai/mcp` over Streamable HTTP with the key in
-`X-API-Key`. Static local schemas keep tool discovery out of ordinary replies;
-the addressing agent has no web tools. Each invocation owns and closes its MCP
-session and async HTTP client. Calls explicitly request `output_format=json`
-instead of parsing the server's default formatted text. Search returns at most
-five bounded snippets; page reading accepts one URL and defaults to indexed
-content, with explicit
-`live=true` for current or unindexed pages. Tool middleware bounds requests,
-content and duration, sanitizes provider failures before they enter AG2 history,
-and propagates cancellation. The key is excluded from settings repr and included
-in log redaction.
+When `KEENABLE_API_KEY` is configured, `AgentProvider` registers the
+`KeenableToolkit` assembled by `ai/tools/web.py`. It uses AG2's `MCPToolkit`
+with `MCPServerConfig` to connect to `https://api.keenable.ai/mcp` over Streamable
+HTTP, authenticating with `X-API-Key` and exposing only `search_web_pages` and
+`fetch_page_content`. AG2 discovers and caches the remote tool schemas and owns
+MCP session and HTTP client cleanup; the addressing agent has no web tools.
+Discovery has a 30-second deadline. A discovery failure logs safe diagnostics
+and omits web tools from that reply; a later turn can discover them again.
+Calls explicitly request `output_format=json` instead of the server's default
+formatted text. Middleware overrides model-supplied provider controls, keeping
+search to five bounded snippets and page reading to one URL and 12000 characters.
+Page reading defaults to indexed content, with explicit `live=true` for current
+or unindexed pages. The middleware validates inputs, bounds content and call
+duration, wraps evidence as untrusted web input, sanitizes provider failures
+before they enter AG2 history, and propagates cancellation. AG2 exposes MCP
+rejections as string errors; diagnostic extraction retains only recognized
+code/status hints, with unknown formats left unclassified. Raw provider errors
+never enter logs or model history. The key is excluded from settings repr and
+included in log redaction.
 
 `ReplyDelivery` remains in `bot`: it owns Telegram typing, redacted failure
 handling, and entity-based Markdown delivery through the slop-writer renderer.
-It sends ordinary Telegram messages once per chunk. Domain messages carry no
-aiogram objects.
+Each `Reply` contains either text or one of six `StickerEmotion` names, with the
+same optional target. A sticker occupies one slot in the three-message batch;
+text and sticker content cannot share a slot. `Dialogue` preserves the emotion
+while validating its target against the selected context.
+The application-scoped `TelegramStickers` resolves those names from the published
+`DashulyaAI` pack by its emoji, independent of pack order, with a five-minute
+cache and a shared lookup lock. Lookup is lazy, has a ten-second timeout and
+rejects missing or ambiguous emoji. Telegram file IDs stay in `bot`, outside the
+model schema. Delivery sends ordinary text chunks or stickers once per attempt,
+and stops the batch on lookup or send failure without an automatic resend.
+The sent-message middleware records confirmed sticker messages through the same
+canonical capture path, including their actual IDs, times, topics, reply targets
+and image references. Domain messages carry no aiogram objects.
 `bot/chat_actions.py` scopes a best-effort typing task to each reply, cancels and
 joins it on exit, and logs failures without propagating notification errors into
 generation. `TelegramReactions` logs each confirmed tool delivery and its timing;
@@ -314,7 +347,8 @@ and domain/infrastructure modules independent of DI.
 ## Container startup
 
 Compose waits for its pgvector-enabled PostgreSQL service to become healthy.
-The runtime resolves `ChatMemoryService`, initializing the shared schema and
+Compose first runs the administrative migration service.
+The runtime resolves `ChatMemoryService`, verifying the shared schema and
 attempting pending preparation before accessing Telegram. With
 `HEALTHCHECK_PATH` configured, startup removes a stale marker, verifies Telegram
 identity and writes the current PID before polling. Shutdown removes the marker

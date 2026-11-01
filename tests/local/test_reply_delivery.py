@@ -7,14 +7,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
-from aiogram.methods import SendMessage, SendRichMessage, TelegramMethod
+from aiogram.methods import (
+    GetStickerSet,
+    SendMessage,
+    SendRichMessage,
+    SendSticker,
+    TelegramMethod,
+)
 from aiogram.types import Message
 
 from dashulya.ai.dialogue import Dialogue
 from dashulya.bot.images import TelegramImages
 from dashulya.bot.replies import ReplyDelivery
+from dashulya.bot.stickers import TelegramStickers
 from dashulya.domain.messages import ImageOmission, Reply, ReplyBatch
 from dashulya.observability import JsonLogFormatter
+from tests.support import dashulya_sticker_set
 
 PRIVATE = {"id": 42, "type": "private", "first_name": "Anna"}
 
@@ -33,7 +41,10 @@ class TestReplyDelivery:
         self.dialogue = AsyncMock(spec=Dialogue)
         self.dialogue.delivery = MagicMock(return_value=nullcontext())
         self.delivery = ReplyDelivery(
-            self.bot, self.dialogue, TelegramImages(self.bot, max_bytes=20_000_000)
+            self.bot,
+            self.dialogue,
+            TelegramImages(self.bot, max_bytes=20_000_000),
+            TelegramStickers(self.bot),
         )
 
     async def message(self, text: str) -> None:
@@ -59,6 +70,127 @@ class TestReplyDelivery:
             for call in self.requests.call_args_list
             if isinstance(call.args[1], SendRichMessage)
         ]
+
+    async def test_sticker_and_text_keep_their_order_and_reply_targets(self) -> None:
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply("First"),
+            Reply(sticker="love", reply_to_message_id=20),
+            Reply("Last"),
+        ))
+
+        async def request(bot: Bot, method: TelegramMethod[Any], **kwargs: Any) -> Any:
+            return dashulya_sticker_set() if isinstance(method, GetStickerSet) else True
+
+        self.requests.side_effect = request
+        await self.message("Hi")
+        sent = [
+            call.args[1]
+            for call in self.requests.call_args_list
+            if isinstance(call.args[1], (SendMessage, SendSticker))
+        ]
+        assert [
+            item.text if isinstance(item, SendMessage) else item.sticker for item in sent
+        ] == ["First", "love-file", "Last"]
+        assert [
+            item.reply_parameters.message_id
+            for item in sent
+            if item.reply_parameters is not None
+        ] == [1, 20, 1]
+
+    async def test_sticker_only_reply_uses_current_topic_and_message(self) -> None:
+        self.dialogue.reply.return_value = ReplyBatch((Reply(sticker="joy"),))
+        incoming = Message.model_validate({
+            "message_id": 10,
+            "date": datetime(2026, 10, 27, tzinfo=UTC),
+            "chat": {
+                "id": -123,
+                "type": "supergroup",
+                "title": "Group",
+                "is_forum": True,
+            },
+            "from": {"id": 42, "is_bot": False, "first_name": "Anna"},
+            "is_topic_message": True,
+            "message_thread_id": 7,
+            "text": "Congratulations!",
+        }).as_(self.bot)
+        with patch.object(
+            self.bot, "get_sticker_set", AsyncMock(return_value=dashulya_sticker_set())
+        ):
+            await self.delivery.reply(incoming)
+        sent = [
+            call.args[1]
+            for call in self.requests.call_args_list
+            if isinstance(call.args[1], SendSticker)
+        ]
+        assert len(sent) == 1
+        assert sent[0].sticker == "joy-file"
+        assert sent[0].chat_id == -123
+        assert sent[0].message_thread_id == 7
+        assert sent[0].reply_parameters is not None
+        assert sent[0].reply_parameters.message_id == 10
+        assert self.replies() == []
+
+    async def test_ambiguous_sticker_send_is_not_retried_and_stops_the_batch(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply("First"),
+            Reply(sticker="sad"),
+            Reply("Must not be sent"),
+        ))
+
+        async def request(bot: Bot, method: TelegramMethod[Any], **kwargs: Any) -> bool:
+            if isinstance(method, SendSticker):
+                raise TelegramNetworkError(method, "PRIVATE response after sending")
+            return True
+
+        self.requests.side_effect = request
+        with (
+            patch.object(
+                self.bot,
+                "get_sticker_set",
+                AsyncMock(return_value=dashulya_sticker_set()),
+            ),
+            pytest.raises(TelegramNetworkError),
+        ):
+            await self.message("Hi")
+        assert [item.text for item in self.replies()] == ["First"]
+        assert (
+            sum(
+                isinstance(call.args[1], SendSticker)
+                for call in self.requests.call_args_list
+            )
+            == 1
+        )
+        event = json.loads(JsonLogFormatter().format(caplog.records[-1]))
+        assert event["delivery_stage"] == "send"
+        assert event["chunk_count"] == 1
+        assert "PRIVATE" not in json.dumps(event)
+
+    async def test_lookup_failure_sends_no_sticker_or_remaining_message(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply(sticker="sad"),
+            Reply("Later"),
+        ))
+        with (
+            patch.object(
+                self.bot,
+                "get_sticker_set",
+                AsyncMock(side_effect=TimeoutError("PRIVATE")),
+            ),
+            pytest.raises(TimeoutError),
+        ):
+            await self.message("Hi")
+        assert not any(
+            isinstance(call.args[1], (SendSticker, SendMessage))
+            for call in self.requests.call_args_list
+        )
+        event = json.loads(JsonLogFormatter().format(caplog.records[-1]))
+        assert event["delivery_stage"] == "sticker_lookup"
+        assert event["chunk_count"] == 0
+        assert "PRIVATE" not in json.dumps(event)
 
     async def test_messages_keep_order_formatting_and_individual_reply_targets(
         self,

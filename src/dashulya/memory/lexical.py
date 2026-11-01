@@ -26,7 +26,9 @@ class LexicalIndex:
                 (list(keyed),),
             )
             saved = {row["document_key"] for row in await cursor.fetchall()}
-            for key in keyed.keys() - saved:
+            # Concurrent cold searches can prepare overlapping document sets.
+            # A stable insertion order avoids waiting on each other's later keys.
+            for key in sorted(keyed.keys() - saved):
                 frequencies = Counter(tokens(keyed[key]))
                 async with connection.transaction():
                     inserted = await connection.execute(

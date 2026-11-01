@@ -5,6 +5,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
+from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from dashulya.database import Database
@@ -18,6 +19,7 @@ from dashulya.domain.memory import (
     message_url_template,
 )
 from dashulya.domain.messages import ConversationKey, ImageFile
+from dashulya.memory._scope import VISIBLE_MESSAGES, scope_parameters
 
 
 def original(row: dict[str, Any]) -> OriginalMessage:
@@ -197,22 +199,9 @@ class MessageStore:
     ) -> list[OriginalMessage]:
         async with self.database.connection() as connection:
             cursor = await connection.execute(
-                """SELECT * FROM messages WHERE
-                (%(private)s OR chat_id=%(chat_id)s)
-                AND (%(chat)s::text IS NULL OR collection=%(chat)s)
-                AND (%(before)s::timestamptz IS NULL OR (
-                    (edited_at IS NULL OR edited_at<%(before)s)
-                    AND CASE WHEN %(before_id)s::bigint IS NULL OR chat_id IS DISTINCT FROM %(chat_id)s
-                        THEN sent_at<%(before)s
-                        ELSE (sent_at,message_id)<(%(before)s,%(before_id)s) END
-                )) ORDER BY sent_at NULLS FIRST,collection,message_id""",
-                {
-                    "private": access.is_private,
-                    "chat_id": access.chat_id,
-                    "chat": chat,
-                    "before": access.before,
-                    "before_id": access.before_id,
-                },
+                VISIBLE_MESSAGES
+                + sql.SQL(" ORDER BY sent_at NULLS FIRST,collection,message_id"),
+                scope_parameters(access, chat),
             )
             return [original(row) for row in await cursor.fetchall()]
 

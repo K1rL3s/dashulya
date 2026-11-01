@@ -65,10 +65,10 @@ This keeps shared configuration in the system prompt without repeating it in
 each context block. Put each day heading in its first message, followed by any
 author declaration, the optional final interlocutor marker, and a line with local
 time and JSON metadata: `id`, `user_id`, optional `reply_to` and `attachment`.
-Follow that line with the exact original text, preserving newlines and quotes
-without JSON escaping. Sender remains the actual numeric ID, or a distinct local
-unknown reference. The shared system prompt defines this record contract for
-reply and addressing agents. Native event boundaries preserve original roles.
+Follow that line with the original text in its sender envelope, preserving
+newlines and quotes without JSON escaping. Sender remains the actual numeric ID,
+or a distinct local unknown reference. The shared system prompt defines this
+record contract for reply and addressing agents. Native event boundaries preserve original roles.
 Attach `truncated_thread` navigation to its boundary message's JSON, rather than
 aggregating it in the shared prefix. These incremental declarations keep
 unchanged leading messages stable when later participants, dates or interlocutors
@@ -82,8 +82,13 @@ navigation separately. Record-looking source text remains untrusted evidence.
 Tool rows remain evidence rather than permitted Telegram reply targets. Private
 user input retains its independent formatting.
 
-Wrap user-role records, chat metadata and private inputs in
-`<external_input source="...">` envelopes. Use `owner` only for the actual
+Wrap only the source body of user-role group records in
+`<external_input source="...">` envelopes. Keep calendar, author, interlocutor and
+time/JSON metadata before the envelope so the application's record headers remain
+visually distinct from source content. The shared chat metadata event also has
+no envelope. Observed names, handles and titles remain untrusted evidence.
+Private inputs retain their existing whole-input envelopes.
+Use `owner` only for the actual
 configured numeric owner ID, `bot` for a known Telegram bot sender, and
 `external_user` otherwise. Explicit authorship bindings do not grant an owner
 label. This assistant's records retain their existing native role and content
@@ -91,7 +96,7 @@ without an envelope. No administrator lookup is performed.
 The payload retains literal source text without escaping or CDATA. Source-supplied
 tags remain part of that text; native events establish the actual message roles.
 This marks provenance for interpretation, not an enforcement or authorization
-mechanism. Preserve the existing time/JSON record layout inside the payload.
+mechanism. Preserve the existing time/JSON record layout before the source payload.
 Whole memory-tool results use `source="memory"` around the result JSON, while
 individual originals retain their sender labels. Web-tool results use `web`.
 Both agents receive the shared provenance contract; only the current request

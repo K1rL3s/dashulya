@@ -5,6 +5,8 @@ from typing import Any
 
 from dashulya.domain.memory import MemoryInputError
 from dashulya.memory._engines import EngineCache
+from dashulya.memory._selection import RecallSelection
+from dashulya.memory._timing import search_stage, search_trace
 from dashulya.memory.history import CanonicalHistory
 
 
@@ -55,46 +57,62 @@ class ScopedRecall:
         before: str | None = None,
         limit: int = 8,
     ) -> dict[str, Any]:
-        if memory_id is not None:
-            return await self.history.query(
-                "read",
-                source_id=memory_id,
-                chat=chat,
-                author_id=author_id,
-                after=after,
-                before=_history_before(before, after),
-            )
-        originals = await self.history.originals(chat=chat)
-        if not query.strip():
-            return {"hits": [], "coverage": self.history.coverage(originals)}
-        async with self._engines.lease(originals) as engine:
-            hits = await engine.search(
-                query, author_id=author_id, after=after, before=before, limit=limit
-            )
-            coverage = await engine.coverage()
-        output = []
-        remaining = 48_000
-        for hit in hits:
-            sources = []
-            for source in hit.sources:
-                item = source.render(max_chars=min(12_000, max(0, remaining)))
-                remaining -= len(item["text"])
-                sources.append(item)
-            context = self.history.related(hit.sources[-1], originals)
-            output.append({
-                "memory_id": hit.sources[-1].source_id,
-                "kind": "message",
-                "memory": hit.text[:6000],
-                "score": hit.score,
-                "sources": sources,
-                "context": [item.render(max_chars=3000) for item in context],
-            })
-        return {
-            "hits": output,
-            "coverage": {
-                **coverage,
-                **self.history.coverage(originals),
-                "complete_history": False,
-                "notice": "Only observed and imported messages are available. Search is bounded; use chat_history for exact counts or original-message scans.",
-            },
-        }
+        with search_trace(self.history.access) as metrics:
+            if memory_id is not None:
+                return await self.history.query(
+                    "list",
+                    source_id=memory_id,
+                    limit=1,
+                    chat=chat,
+                    author_id=author_id,
+                    after=after,
+                    before=_history_before(before, after),
+                )
+            selection = RecallSelection(self.history)
+            with search_stage("coverage"):
+                available = await selection.coverage(chat)
+            if not query.strip():
+                return {"hits": [], "coverage": available}
+            with search_stage("selection"):
+                originals, primary_ids = await selection.originals(
+                    chat=chat, author_id=author_id, after=after, before=before
+                )
+            metrics["candidate_count"] = len(primary_ids)
+            metrics["loaded_originals"] = len(originals)
+            with search_stage("retrieval"):
+                async with self._engines.lease(
+                    originals, primary_ids=primary_ids
+                ) as engine:
+                    hits = await engine.search(query, limit=limit)
+                    with search_stage("index_coverage"):
+                        coverage = await engine.coverage()
+                    with search_stage("context"):
+                        context_originals = await selection.context(
+                            [hit.sources[-1] for hit in hits], chat=chat
+                        )
+                    output = []
+                    remaining = 48_000
+                    for hit in hits:
+                        sources = []
+                        for source in hit.sources:
+                            item = source.render(max_chars=min(12_000, max(0, remaining)))
+                            remaining -= len(item["text"])
+                            sources.append(item)
+                        context = self.history.related(hit.sources[-1], context_originals)
+                        output.append({
+                            "memory_id": hit.sources[-1].source_id,
+                            "kind": "message",
+                            "memory": hit.text[:6000],
+                            "score": hit.score,
+                            "sources": sources,
+                            "context": [item.render(max_chars=3000) for item in context],
+                        })
+                    return {
+                        "hits": output,
+                        "coverage": {
+                            **coverage,
+                            **available,
+                            "complete_history": False,
+                            "notice": "Only observed and imported messages are available. Search is bounded; use chat_history for exact counts or original-message scans.",
+                        },
+                    }

@@ -162,7 +162,7 @@ def _format_messages(
     result = [
         {
             "role": "user",
-            "text": external_input(f"{label}:\nchat: {chat}", "external_user"),
+            "text": f"{label}:\nchat: {chat}",
         }
     ]
     cuts = {thread.boundary_id: thread for thread in truncated_threads}
@@ -189,21 +189,23 @@ def _format_messages(
             f"{format_local_time(local) if local else 'Unknown time'} "
             + json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
         )
-        text = "\n".join(lines) + "\n" + message.text
         assistant = bot_id is not None and message.author_id == bot_id
-        result.append({
-            "role": "assistant" if assistant else "user",
-            "text": text
+        text = (
+            message.text
             if assistant
             else external_input(
-                text,
+                message.text,
                 input_source(
                     message.author_id,
                     owner_id=owner_id,
                     is_bot=message.is_bot is True
                     or (bot_id is not None and message.author_id == bot_id),
                 ),
-            ),
+            )
+        )
+        result.append({
+            "role": "assistant" if assistant else "user",
+            "text": "\n".join(lines) + "\n" + text,
         })
         previous_day = local.date() if local else None
     return result

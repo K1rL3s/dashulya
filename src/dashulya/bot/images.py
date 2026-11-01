@@ -12,7 +12,7 @@ from cachetools import TTLCache
 
 from dashulya.bot.media_frames import FrameBudgetError, FrameDecodeError, first_frame
 from dashulya.bot.messages import conversation_key, image_file
-from dashulya.domain.memory import MemoryMessage
+from dashulya.domain.memory import MemoryMessage, OriginalMessage
 from dashulya.domain.messages import ImageAttachment, ImageFile, ImageOmission
 from dashulya.observability import exception_fields
 
@@ -401,13 +401,15 @@ class TelegramImages:
         request_message_id: int | None,
         phase: str,
         images: tuple[ImageAttachment | ImageOmission, ...] = (),
+        max_bytes: int | None = None,
     ) -> tuple[ImageAttachment | ImageOmission, ...]:
         started = perf_counter()
         used = sum(
             len(image.data) for image in images if isinstance(image, ImageAttachment)
         )
-        _check_size(used, self._max_bytes)
-        batch = _BatchBudget(self._max_bytes - used)
+        limit = self._max_bytes if max_bytes is None else min(self._max_bytes, max_bytes)
+        _check_size(used, limit)
+        batch = _BatchBudget(limit - used)
         fields: dict[str, object] = {
             "chat_id": chat_id,
             "request_message_id": request_message_id,
@@ -494,10 +496,11 @@ class TelegramImages:
 
     async def load_context(
         self,
-        messages: tuple[MemoryMessage, ...],
+        messages: tuple[MemoryMessage | OriginalMessage, ...],
         *,
         images: tuple[ImageAttachment | ImageOmission, ...] = (),
         request_message_id: int | None = None,
+        max_bytes: int | None = None,
     ) -> tuple[ImageAttachment | ImageOmission, ...]:
         """Load selected media concurrently, preserving input and newest-first priority."""
         allowed = {message.message_id for message in messages}
@@ -520,8 +523,9 @@ class TelegramImages:
         )
         return await self._load_many(
             pending,
-            chat_id=messages[0].chat_id if messages else 0,
+            chat_id=(messages[0].chat_id or 0) if messages else 0,
             request_message_id=request_message_id,
             phase="context",
             images=supplied,
+            max_bytes=max_bytes,
         )

@@ -134,7 +134,10 @@ async def grade(
 ) -> RunResult:
     if support_sets:
         dataset.cases[0]["gold"]["requirements"][0]["support_sets"] = support_sets
-    call = ToolCallEvent("chat_history", arguments='{"action":"read"}')
+    call = ToolCallEvent(
+        "chat_history",
+        arguments='{"sql": ["SELECT * FROM messages ORDER BY author_id LIMIT 20"]}',
+    )
     result = ToolResultEvent.from_call(
         call,
         {
@@ -213,7 +216,10 @@ async def test_capture_uses_injected_production_tool_and_fresh_stream(
 ) -> None:
     service = AsyncMock(spec=ChatMemoryService)
     reader = AsyncMock()
-    reader.query.return_value = {"action": "count", "count": 1, "coverage": {}}
+    reader.sql.return_value = {
+        "query_count": 1,
+        "results": [{"action": "count", "count": 1, "coverage": {}}],
+    }
     accesses: list[MemoryAccess] = []
 
     def history(access: MemoryAccess) -> AsyncMock:
@@ -233,7 +239,10 @@ async def test_capture_uses_injected_production_tool_and_fresh_stream(
     try:
         agent = create_reply_agent(
             TestConfig(
-                ToolCallEvent("chat_history", arguments='{"action":"count"}'),
+                ToolCallEvent(
+                    "chat_history",
+                    arguments='{"sql": ["SELECT count(*) AS count FROM messages"]}',
+                ),
                 '{"messages":[{"text":"One saved message.","reply_to_message_id":null}]}',
                 '{"messages":[{"text":"Fresh answer.","reply_to_message_id":null}]}',
             ),
@@ -249,7 +258,7 @@ async def test_capture_uses_injected_production_tool_and_fresh_stream(
         )
         assert first.exception is None
         assert second.exception is None
-        assert reader.query.await_count == 2
+        assert reader.sql.await_count == 2
         assert len(first.events_of(ToolResultEvent)) == 1
         assert len(second.events_of(ToolResultEvent)) == 1
         assert (
@@ -312,6 +321,51 @@ def test_count_requires_exact_canonical_predicate_and_successful_result() -> Non
         trace({**args, "name_contains": "Alice"}, 2), aggregation
     )
     assert not canonical_count_matches(trace({**args, "action": "list"}, 2), aggregation)
+
+
+@pytest.mark.parametrize("prefix", [[], ["SELECT 1 AS ignored"]])
+def test_count_sql_checks_predicates_and_unwraps_production_tool_evidence(
+    prefix: list[str],
+) -> None:
+    aggregation = {
+        "author_id": 42,
+        "after_inclusive": "2026-01-01T00:00:00+00:00",
+        "before_exclusive": "2026-01-02T00:00:00+00:00",
+        "text_contains_literal": "https://github.com/",
+        "expected_count": 2,
+    }
+    query = "SELECT count(*) AS matches FROM messages m WHERE m.text ILIKE '%https://github.com/%' AND m.sent_at < TIMESTAMPTZ '2026-01-02 03:00:00+03' AND m.author_id = 42 AND m.sent_at >= TIMESTAMPTZ '2026-01-01 03:00:00+03'"
+
+    def trace(sql: str) -> Trace:
+        call = ToolCallEvent(
+            "chat_history", arguments=json.dumps({"sql": [*prefix, sql]})
+        )
+        payload = json.dumps({
+            "results": [
+                *[
+                    {"query_index": index, "outcome": "ok", "rows": [{"ignored": 1}]}
+                    for index, _ in enumerate(prefix, 1)
+                ],
+                {
+                    "query_index": len(prefix) + 1,
+                    "outcome": "ok",
+                    "rows": [{"matches": 2}],
+                    "truncated": False,
+                },
+            ]
+        })
+        result = ToolResultEvent.from_call(
+            call, '<external_input source="memory">\n' + payload + "\n</external_input>"
+        )
+        return Trace(events=[call, result], exception=None, duration_ms=1)
+
+    assert canonical_count_matches(trace(query), aggregation)
+    assert not canonical_count_matches(trace(query.replace("= 42", "= 43")), aggregation)
+    assert not canonical_count_matches(trace(query + " OR true"), aggregation)
+    assert not canonical_count_matches(trace(query + " GROUP BY author_id"), aggregation)
+    assert not canonical_count_matches(
+        trace(query.replace("messages m", "public.messages m")), aggregation
+    )
 
 
 @pytest.mark.parametrize("required_fact_found", [True, False])

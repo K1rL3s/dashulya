@@ -36,6 +36,7 @@ from dashulya.ai.message_format import MessageFormatter, format_local_time
 from dashulya.ai.tools.history import chat_history
 from dashulya.ai.tools.memory import search_memory
 from dashulya.database import Database
+from dashulya.database.migrate import migrate
 from dashulya.domain.memory import (
     ChatMemoryService,
     HistoryReader,
@@ -109,8 +110,10 @@ async def isolated_database(url: str) -> AsyncGenerator[Database, None]:
         await connection.execute(
             sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema))
         )
-    database = Database(make_conninfo(url, options=f"-c search_path={schema},public"))
+    scoped_url = make_conninfo(url, options=f"-c search_path={schema},public")
+    database = Database(scoped_url)
     try:
+        await migrate(scoped_url)
         await database.open()
         yield database
     finally:

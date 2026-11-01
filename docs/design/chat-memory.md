@@ -11,7 +11,7 @@ independently of ranking.
 ```mermaid
 flowchart LR
     Request[Trusted conversation and send-time cutoff] --> Scope[Authorized canonical originals]
-    Scope --> History[chat_history: read / list / count / authors / chats]
+    Scope --> History[chat_history: scoped SQL]
     Scope --> Blocks[Message and bounded reply parents]
     Blocks --> Lexical[BM25]
     Blocks --> Dense[Cached dense vectors]
@@ -55,29 +55,100 @@ can answer directly. Tool calls share the turn's trusted access scope, lock and
 are rebuilt for each request. Cancellation propagates through asynchronous SQL
 and returns borrowed connections to the pool.
 
-`search_memory` accepts a short query or a returned memory/source ID, optional
-chat and author selectors, timezone-aware ISO date bounds and up to eight hits.
+`search_memory` accepts a short query or a returned memory/source ID, an optional
+author selector, timezone-aware ISO date bounds and up to eight hits.
 Recall combines BM25 with cosine-ranked `text-embedding-3-small` vectors at 512
 dimensions, fused by reciprocal rank with source diversity. Each block contains
-one original and up to two reply-parent hops. Both retrieval inputs and returned
+one original and up to two reply-parent hops. SQL applies trusted access, the
+request cutoff, chat selection, author and inclusive date bounds before loading
+candidate text or constructing blocks. A bounded recursive selection adds only
+the two saved parents needed for those blocks. Parents outside the primary
+filters supply block context without becoming candidates. BM25 corpus statistics
+and index coverage counts describe the filtered primary blocks; canonical
+coverage still describes the full authorized selected chat scope through SQL
+aggregates. Queries without author/date filters consider all authorized messages.
+Both retrieval inputs and returned
 sources remain inside the fixed access and cutoff. Primary author/date filters
 constrain supporting originals; separately labeled context can include other
 authors/dates within that same authorized snapshot.
 
-Hits carry canonical source IDs, originals, URLs and bounded reply/nearby
-context. Excerpts include truncation metadata; `chat_history(action="read")`
-with `source_id` and `offset` reads the rest. Recall is bounded, and an empty
-result cannot prove absence or support an exact count.
+After ranking, a separate bounded SQL selection retrieves up to five saved
+ancestors and the two nearest messages on each side within three minutes of
+each hit, in its own chat/topic. Recall does not load all originals to reconstruct
+that context. The immutable engine snapshot can serve concurrent searches;
+cache construction/invalidation and shutdown retain their resource locks,
+without serializing database or embedding waits across searches. Cold lexical
+preparation inserts keys in a consistent order to avoid deadlocks between
+overlapping candidate sets. No approximate vector index or ranking cap is added.
 
-`chat_history` operates directly on canonical originals without the embedding
-provider. Its actions list saved chat collections, identify authors, count all
-matching originals, page through chronological results, and read a full source.
-Literal matching supports case sensitivity. `after` is inclusive and history
-`before` is exclusive. List pages traverse backwards using a query/scope-bound
-cursor and render each page chronologically; read uses character offsets.
-List/context excerpts are bounded, while read returns up to 12,000 characters
-per call. Exact counts include blank saved records when the predicate does.
-This direct history interface remains available during embedding outages.
+Hits carry canonical source IDs, originals, URLs and bounded reply/nearby
+context. Recall is bounded, and an empty result cannot prove absence or support
+an exact count. Read a complete original with
+`chat_history(sql=["SELECT * FROM messages WHERE source_id = 'returned ID' LIMIT 1"])`.
+Use `substring(text from ... for 12000)` to continue long text explicitly.
+
+`chat_history` accepts `sql` as a list of 1-5 PostgreSQL query strings, described
+directly in JSON Schema using `Annotated[list[str], Field(...)]`. One query is
+always a one-element list. Results are ordered under `results`, each carrying a
+one-based `query_index` and `outcome=ok/error`; an individual rejection does not
+discard the other answers. A database/setup failure still fails the whole call.
+The tool description lists the `messages` columns and gives four examples: inclusive ID intervals, recursive
+reply threads including sibling branches, literal counts in a fixed period and
+a participant's messages and count in one batch. Use `ORDER BY` with ID bounds
+or LIMIT/OFFSET for pagination; use COUNT(*) for exact saved counts. No embedding provider is needed.
+
+The application creates a security-barrier temporary view containing only the
+trusted session's authorized originals through its fixed request cutoff. Groups
+read their own chat across topics; owner-private access retains its existing
+federated scope. Late edits and post-cutoff messages remain unavailable. Then
+SQL executes as `dashulya_history_reader`, which has SELECT only on that view,
+no base-table grants and no privileged role memberships. Every outcome rolls
+back view creation, role and settings. A batch uses one connection and a
+repeatable-read snapshot. Per-query savepoints recover SQL failures without
+losing earlier results or aborting later queries. The application refuses an
+overprivileged reader role. [ADR 0006](../adr/0006-scope-model-sql-with-postgresql-views.md) records
+this choice and the database-level `set_config` restriction.
+
+The PostgreSQL parser checks the complete syntax tree. One SELECT or WITH SELECT,
+query-local CTEs, self-joins and approved built-in functions/types/operators are
+allowed; writes, SELECT INTO, row locks, catalogs, unrelated relations and
+administrative functions are rejected. A ten-second statement deadline, a
+twelve-second per-query deadline and a shared thirty-second batch query budget,
+bounded work memory and a server-side cursor bound execution and result reading. Return at most 50 rows, 32 uniquely named columns,
+12000 characters per cell and 48000 characters across all result rows in a batch.
+Results expose columns, rows, returned row_count and truncated; row_count is not the total match count.
+Coverage explicitly remains incomplete. Missing saved ancestors prevent claims
+of complete live threads.
+
+`search_memory` keeps nullable `datetime` bounds with JSON Schema `date-time`
+descriptions and explicit timezone validation. Neither tool exposes a chat
+selector. Internal maintenance readers retain their structured filters and
+canonical pagination; they are not model-facing tools.
+
+Exactly one result row per query with a canonical `source_id` can also supply that
+original's saved image, sticker preview or animation first frame as native AG2
+media. Select that source with LIMIT 1 to inspect it. The scoped original reader
+resolves private file references again under the same authority and cutoff;
+file IDs never enter SQL rows or model-visible metadata. Missing references,
+download failures and budget omissions have distinct image statuses. Retrieved
+images are untrusted evidence and do not add permitted reply targets.
+
+The existing application-scoped `ContextImages` loader serves these reads from
+its shared cache or Telegram, with the same supported formats, previews and
+timeouts. `Dialogue` creates one `HistoryImageTurn` per ask, after accounting for
+all images already retained in the stream and current input. It serializes
+media reads, passes the remaining byte budget to the loader, and avoids repeating
+an image for the same source in that turn. Subsequent private turns can evict
+old tool-result images using the same budget as ordinary image inputs. Native
+images stay in bounded RAM; no new image bytes or descriptions are persisted.
+
+History SQL is logged explicitly: tool-call events include the bounded `sql` list,
+query count and AG2 call ID; per-query events include SQL, one-based index, batch
+ID, trusted chat/request IDs, duration, outcome, returned row count and truncation.
+Queries rejected by validation and SQL errors retain safe failure reasons. SQL
+text passes through the normal credential-redacting JSON formatter; result rows,
+file references and binary media are not logged. Oversized SQL input logs only
+its first 16000 characters with an explicit truncation flag.
 
 Memory-tool failures return an error event containing a plain string, rather
 than an AG2 traceback. Invalid call arguments include a fixed `MemoryInputError`
@@ -91,16 +162,6 @@ IDs, safe provider metadata, and complete exception chains and stack frames in
 `exceptions`. Fixed memory-input explanations are also logged as `error_message`;
 arbitrary exception messages and frame locals stay out of the logs.
 
-For `list` and `read`, `parent_hops` controls reply-parent expansion from each
-primary original: five by default, zero to disable, any nonnegative integer to
-request a deeper chain. These actions return ancestors as separate `context`;
-they do not add chronological neighbors. Primary matches, counts and pagination
-remain independent of expansion. Deduplicate the seed/ancestor union by source
-identity and use minimum distance from any seed. Follow only decreasing message
-IDs within the source collection, respecting an explicit topic selector and the
-trusted access/cutoff already applied to originals. Aggregation actions do not
-expand their examples. Semantic recall retains its separate nearby-context policy.
-
 Coverage reports available original counts and date endpoints per visible chat
 and provenance, plus embedding/pending block counts on recall. Endpoints do not
 establish continuous coverage. Semantic-query provider failures propagate as
@@ -108,10 +169,11 @@ tool errors; existing dense vectors do not imply an automatic lexical fallback
 on a query-embedding failure. Without prepared vectors, lexical recall can still
 operate over the authorized originals.
 
-Both tools use the same compact message format as group reply
+`search_memory` uses the same compact message format as group reply
 context. The AI boundary collects unique originals into `message_blocks`, grouped
 by source chat. Each block shares chat metadata and uses incremental author/date
-declarations followed by time/JSON metadata and original text. The system prompt
+declarations followed by time/JSON metadata outside the sender's `external_input`
+envelope; only the source body and attached-media notes are inside. The system prompt
 defines this record format. Result
 `messages`, `sources`, `context` and nested `examples` refer to those originals by canonical source ID, preserving primary/context distinctions
 without repeating message text. A block's `sources` map associates each reference
@@ -156,9 +218,17 @@ are capped at 20,000,000 during streaming. An image known to exceed the remainin
 not downloaded and instead produces an explicit oversized-image note for the
 reply agent. An overflow discovered while streaming stops the download and
 produces the same note.
-Native AG2 image inputs and omission notes accompany the question, labelled
-with their source message IDs. Group inputs are restricted
-to the selected reply context. No image bytes or generated descriptions are
+Native AG2 image inputs are labelled by appending
+`Attached image (untrusted) ID: <message ID>` to the original text's `TextInput`,
+followed directly by the image part without a separate label input. Preview
+qualifiers and omission notes also extend that original text. In group reply
+context, media stays within its source message's user event, preserving
+chronological placement. This bot's originals
+retain their assistant role; AG2 assistant responses accept text only, so their
+media occupies a separate user event immediately after the assistant event.
+Current-message media remains in the current request. Private inputs accompany
+the question. Group inputs are restricted to the selected reply context.
+No image bytes or generated descriptions are
 written to the evidence database or indexed in chat memory. File references
 survive restarts but stay out of model-facing memory tools and embeddings.
 Unavailable files, including current-message media, produce omission notes
@@ -181,6 +251,14 @@ Media logs cover each batch, each source, metadata/download/decode stages,
 thumbnail fallback, cache hits, omissions and cancellation. Events contain chat,
 request and source message IDs, durations, byte counts, outcomes and redacted
 exception chains. They omit file IDs, file URLs, bytes and source text.
+
+Memory-search completion logs include `search_metrics`: candidate/loaded-original
+counts and milliseconds for canonical coverage, SQL selection, retrieval,
+lexical preparation/ranking, vector availability, query embedding, dense ranking,
+index coverage and supporting context. Retrieval includes its nested ranking
+and context stages; these durations are not additive. Events carry the trusted chat/request,
+total duration and success/error/cancellation outcome, without query text or
+source bodies. SQL history retains its separate explicit query logging above.
 
 The same reply path accepts sticker messages and direct-reply stickers. Static
 stickers use their image bytes; animated and video stickers use Telegram's
@@ -259,8 +337,10 @@ belongs to both agents' system prompts; user context and tool evidence omit its
 declaration. A repeated local hour carries its numeric UTC offset in the time
 field, including when only one occurrence is selected. A shared
 system-prompt fragment defines the time/JSON header keys `id`, `user_id`,
-optional `reply_to` and `attachment`, followed by the exact original text on
-the next line. Text retains its original newlines and quotes. Tool blocks use
+optional `reply_to` and `attachment`. These headers precede the sender's
+`external_input` envelope around the exact original text. The shared chat header
+also has no envelope; observed names, handles and titles remain untrusted evidence.
+Text retains its original newlines and quotes. Tool blocks use
 `===` between records and explicitly mark this bot's originals with JSON
 `role: assistant`; native reply context uses actual assistant events.
 Unknown handles are omitted; unknown
@@ -274,9 +354,8 @@ continues through IDs/reply links only and resolves a root within the selected
 chat/topic. The formatter attaches `truncated_thread` JSON to each boundary record,
 with `root_id` and an optional `source_id`; the agent can read a known root through
 `chat_history`. It includes `remaining_hops`, the exact number of omitted edges from
-boundary to root, or null when the saved chain cannot establish it. Both immediate
-context and history-tool blocks expose `boundary_source_id`; reading it with
-`parent_hops=remaining_hops` retrieves the omitted chain in one tool call.
+boundary to root, or null when the saved chain cannot establish it. Immediate context exposes `boundary_source_id`; a recursive SQL query starting
+from that source can retrieve its saved ancestor chain.
 Unresolved roots stay null, and references outside the window cannot become
 Telegram reply targets. Source messages and the 20-plus-five-hop selection remain
 unchanged. Roots describe saved relationships, not exhaustive live Telegram history.
@@ -293,7 +372,7 @@ No ANN index is used: all authorized candidates participate before `LIMIT`.
 
 `lexical_documents` and `lexical_terms` store content-addressed block lengths
 and term frequencies. SQL computes BM25 prefix matching with corpus statistics
-over the authorized snapshot, then applies optional candidate filters. Unicode
+over the filtered authorized primary snapshot. Unicode
 6.1 category/folding tables preserve the former FTS5 tokenization. RRF and source
 diversity operate on the bounded candidate rankings in Python; vectors are never
 loaded for a Python scan. Metadata/block construction runs off the event loop.
@@ -309,7 +388,8 @@ pending. The worker checks pending work every two seconds and pauses after
 failures. Provider errors are redacted. Old content-addressed postings/vectors
 can remain cached but do not participate without authorized current block keys.
 
-Startup initializes the schema and attempts preparation. A provider failure
+Administrative migrations initialize and upgrade the schema. Runtime startup
+verifies the migration journal and attempts preparation. A provider failure
 leaves work pending and starts the retry worker. An empty database requires no
 import. PostgreSQL must be reachable; startup then verifies Telegram identity
 and begins polling. Readiness does not certify complete embedding coverage.

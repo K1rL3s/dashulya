@@ -1,76 +1,164 @@
+import asyncio
 import json
-from typing import Annotated, Literal
+from dataclasses import dataclass, field
+from typing import Annotated, Any
 
-from ag2 import Variable
+from ag2 import Inject
+from ag2.events import BinaryInput, ImageInput, ToolResult
 from ag2.tools import tool
 from dishka_ag2 import FromDishka, inject
+from pydantic import Field
 
-from dashulya.ai.message_format import MessageFormatter, external_input
-from dashulya.domain.memory import HistoryReader
+from dashulya.ai.message_format import external_input
+from dashulya.domain.memory import ContextImages, HistoryReader, OriginalMessage
+from dashulya.domain.messages import ImageAttachment, ImageOmission
+
+
+@dataclass
+class HistoryImageTurn:
+    remaining_bytes: int
+    request_message_id: int | None
+    images: ContextImages
+    seen: set[str] = field(default_factory=set)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    async def load(
+        self, source: OriginalMessage
+    ) -> tuple[ImageAttachment | ImageOmission, ...]:
+        async with self.lock:
+            if source.source_id in self.seen:
+                return ()
+            if self.remaining_bytes <= 0:
+                return (ImageOmission(source.message_id, "too_large"),)
+            loaded = await self.images.load_context(
+                (source,),
+                request_message_id=self.request_message_id,
+                max_bytes=self.remaining_bytes,
+            )
+            self.remaining_bytes -= sum(
+                len(image.data) for image in loaded if isinstance(image, ImageAttachment)
+            )
+            if any(isinstance(image, ImageAttachment) for image in loaded):
+                self.seen.add(source.source_id)
+            return loaded
+
+
+async def _load_image(
+    item: dict[str, Any],
+    history: HistoryReader,
+    image_turn: HistoryImageTurn | None,
+) -> list[BinaryInput]:
+    attachments = []
+    if len(item.get("rows", [])) == 1 and isinstance(
+        item["rows"][0].get("source_id"), str
+    ):
+        source = await history.original(item["rows"][0]["source_id"])
+        if source is not None and source.media_type is not None:
+            if source.image_file is None:
+                item["image"] = {
+                    "source_id": source.source_id,
+                    "status": "no_saved_reference",
+                }
+            elif image_turn is None:
+                item["image"] = {
+                    "source_id": source.source_id,
+                    "status": "loading_unavailable",
+                }
+            else:
+                loaded = await image_turn.load(source)
+                item["image"] = {
+                    "source_id": source.source_id,
+                    "status": "already_supplied",
+                }
+                for image in loaded:
+                    if isinstance(image, ImageOmission):
+                        item["image"]["status"] = image.reason
+                    else:
+                        item["image"].update(
+                            status="loaded",
+                            untrusted=True,
+                            preview_kind=image.preview_kind,
+                            first_frame=image.first_frame,
+                        )
+                        attachments.append(
+                            ImageInput(data=image.data, media_type=image.media_type)
+                        )
+    return attachments
 
 
 @tool
 @inject
 async def chat_history(
-    action: Literal["list", "read", "count", "authors", "chats"] = "list",
-    text_contains: str = "",
-    name_contains: str | None = None,
-    case_sensitive: bool = False,
-    author_id: int | None = None,
-    after: str | None = None,
-    before: str | None = None,
-    chat: str | None = None,
-    source_id: str | None = None,
-    cursor: str | None = None,
-    offset: int = 0,
-    limit: int = 20,
-    topic_id: int | None = None,
-    parent_hops: int = 5,
+    sql: Annotated[
+        list[str],
+        Field(
+            min_length=1,
+            max_length=5,
+            description="Independent PostgreSQL SELECT or WITH ... SELECT queries over messages. Use a one-element list for one query.",
+        ),
+    ],
     *,
     history: FromDishka[HistoryReader],
-    formatter: FromDishka[MessageFormatter],
-    user_id: Annotated[int | None, Variable(default=None)],
-) -> str:
-    """Read, page and count canonical saved originals independently of embeddings.
+    image_turn: Annotated[
+        HistoryImageTurn | None, Inject("history_image_turn", default=None)
+    ],
+) -> ToolResult:
+    """Read saved messages, reply threads, participants and exact counts.
 
-    action:
-    - list: chronological pages traversed backwards with next_cursor. offset skips
-      rows and cannot accompany cursor. limit is 1-50.
-    - read: requires source_id; returns up to 12000 characters at offset, with
-      next_offset for continuation. List/context excerpts may be truncated.
-    - count: exact matching original count, including blank saved records.
-    - authors: numeric IDs, names/usernames and examples. name_contains casefolds
-      names/handles (optional leading @); text_contains still filters message bodies.
-    - chats: saved collections and examples, not Telegram's complete chat list.
-
-    text_contains is literal; case_sensitive controls matching. after is inclusive,
-    before exclusive, both timezone-aware ISO timestamps. author_id/chat/topic_id
-    narrow the authorized snapshot; topics are unrestricted by default.
-    list/read add reply ancestors as separate context via parent_hops (0 disables;
-    any nonnegative depth). Expansion stays in the source chat/topic;
-    primary matches, counts and pagination remain independent. Ancestors may have
-    other authors/dates. For truncated_thread navigation, read boundary_source_id with
-    parent_hops=remaining_hops to retrieve the omitted chain; null means unknown.
-    Failures return an error string, not an empty result. Correct invalid arguments;
-    an unavailable history lookup cannot establish absence or an exact count.
-    """
-    result = await history.query(
-        action,
-        text_contains=text_contains,
-        name_contains=name_contains,
-        case_sensitive=case_sensitive,
-        author_id=author_id,
-        after=after,
-        before=before,
-        chat=chat,
-        source_id=source_id,
-        cursor=cursor,
-        offset=offset,
-        limit=limit,
-        topic_id=topic_id,
-        parent_hops=parent_hops,
+    Schema (NULL means unknown):
+    ```sql
+    messages (
+        source_id TEXT NOT NULL,            -- Canonical ID for exact reads and media.
+        chat TEXT NOT NULL,                 -- Source collection key.
+        chat_id BIGINT NULL,                -- Telegram chat ID; NULL for unbound archives.
+        message_id BIGINT NOT NULL,          -- Telegram message ID.
+        text TEXT NOT NULL,                 -- Original text/caption; may be empty.
+        sent_at TIMESTAMPTZ NULL,            -- Original send time.
+        author_id BIGINT NULL,               -- Numeric sender ID.
+        author TEXT NOT NULL,               -- Sender display name.
+        username TEXT NULL,                 -- Sender handle.
+        is_bot BOOLEAN NULL,
+        chat_title TEXT NOT NULL,
+        chat_username TEXT NULL,
+        topic_id BIGINT NULL,                -- Forum topic ID.
+        reply_to_message_id BIGINT NULL,     -- Parent message ID in the same chat/topic.
+        edited_at TIMESTAMPTZ NULL,
+        media_type TEXT NULL,               -- E.g. photo, sticker, animation.
+        url TEXT NULL,                      -- Original message link.
+        provenance TEXT NOT NULL,           -- E.g. 'live', 'imported'.
+        archive_key TEXT NULL               -- Import reference.
     )
-    return external_input(
-        json.dumps(formatter.result(result, interlocutor_id=user_id), ensure_ascii=False),
+    ```
+    Key: (chat, message_id). Join replies within that chat and use
+    IS NOT DISTINCT FROM for nullable topic IDs. Timestamp literals need an offset.
+    CTEs, recursive CTEs and self-joins are supported.
+
+    Use ORDER BY and LIMIT (up to 50 rows, 32 uniquely named columns per query).
+    Results follow input order: query_index is 1-based; outcome=ok supplies
+    columns, rows, row_count and truncated; outcome=error supplies error.
+    Correct and retry failed queries individually. row_count counts returned rows;
+    use COUNT(*) for totals. When truncated, page with ID bounds or OFFSET;
+    continue long text with substring(text from 12001 for 12000).
+
+    To view saved media, select one original's source_id with LIMIT 1;
+    image.status reports whether an image or preview was supplied.
+
+    Examples (replace sample IDs with observed IDs):
+    - Case 1: Read messages between two IDs, including both endpoints.
+      {"sql": ["SELECT * FROM messages WHERE message_id BETWEEN 20000 AND 20100 ORDER BY message_id LIMIT 50"]}
+    - Case 2: Read the thread containing a message, including saved sibling branches.
+      {"sql": ["WITH RECURSIVE thread AS (SELECT * FROM messages WHERE message_id = 20998 UNION SELECT m.* FROM messages m JOIN thread t ON m.chat = t.chat AND m.topic_id IS NOT DISTINCT FROM t.topic_id AND ((m.message_id = t.reply_to_message_id AND m.message_id < t.message_id) OR (m.reply_to_message_id = t.message_id AND m.message_id > t.message_id))) SELECT * FROM thread ORDER BY message_id LIMIT 50"]}
+    - Case 3: Count messages containing a phrase in a fixed period.
+      {"sql": ["SELECT count(*) AS matches FROM messages WHERE text ILIKE '%deployment%' AND sent_at >= TIMESTAMPTZ '2026-10-01 00:00:00+03' AND sent_at < TIMESTAMPTZ '2026-11-01 00:00:00+03'"]}
+    - Case 4: Batch a participant's messages and an independent exact count.
+      {"sql": ["SELECT * FROM messages WHERE author_id = 42 AND text ILIKE '%deployment%' ORDER BY message_id DESC LIMIT 20", "SELECT count(*) AS matches FROM messages WHERE author_id = 42 AND text ILIKE '%deployment%'"]}
+    """
+    result = await history.sql(sql)
+    attachments = []
+    for item in result["results"]:
+        attachments.extend(await _load_image(item, history, image_turn))
+    text = external_input(
+        json.dumps(result, ensure_ascii=False),
         "memory",
     )
+    return ToolResult(text, *attachments)

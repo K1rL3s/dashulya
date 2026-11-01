@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from time import perf_counter
 
 from aiogram import Bot
@@ -9,10 +10,17 @@ from dashulya.bot.chat_actions import typing
 from dashulya.bot.formatting import render_markdown
 from dashulya.bot.images import ImageInputError, TelegramImages
 from dashulya.bot.messages import conversation_key
+from dashulya.bot.stickers import TelegramStickers
 from dashulya.domain.messages import ImageAttachment, ImageOmission, Reply, ReplyRequest
 from dashulya.observability import exception_fields
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _DeliveryProgress:
+    chunk_count: int = 0
+    stage: str = "render"
 
 
 class ReplyDelivery:
@@ -21,10 +29,12 @@ class ReplyDelivery:
         bot: Bot,
         dialogue: Dialogue,
         images: TelegramImages,
+        stickers: TelegramStickers,
     ) -> None:
         self._bot = bot
         self._dialogue = dialogue
         self._images = images
+        self._stickers = stickers
 
     async def reply(self, message: Message) -> None:
         async with self._dialogue.delivery(conversation_key(message)):
@@ -103,24 +113,9 @@ class ReplyDelivery:
             # Reaction outcomes were already handled within the agent's turn.
             return
         delivery_started = perf_counter()
-        chunk_count = 0
-        delivery_stage = "render"
+        progress = _DeliveryProgress()
         try:
-            for item in messages:
-                reply_parameters = ReplyParameters(
-                    message_id=item.reply_to_message_id or message.message_id,
-                    allow_sending_without_reply=True,
-                )
-                for chunk, entities in render_markdown(item.text):
-                    delivery_stage = "send"
-                    await message.answer(
-                        chunk,
-                        entities=entities,
-                        parse_mode=None,
-                        reply_parameters=reply_parameters,
-                    )
-                    chunk_count += 1
-                    delivery_stage = "render"
+            await self._deliver(message, messages, progress)
         except Exception as error:
             logger.warning(
                 "AI reply delivery failed",
@@ -128,8 +123,8 @@ class ReplyDelivery:
                     **context,
                     **exception_fields(error),
                     "message_count": len(messages),
-                    "chunk_count": chunk_count,
-                    "delivery_stage": delivery_stage,
+                    "chunk_count": progress.chunk_count,
+                    "delivery_stage": progress.stage,
                     "duration_ms": round((perf_counter() - delivery_started) * 1000),
                 },
             )
@@ -140,6 +135,33 @@ class ReplyDelivery:
                 **context,
                 "duration_ms": round((perf_counter() - delivery_started) * 1000),
                 "message_count": len(messages),
-                "chunk_count": chunk_count,
+                "chunk_count": progress.chunk_count,
             },
         )
+
+    async def _deliver(
+        self, message: Message, messages: tuple[Reply, ...], progress: _DeliveryProgress
+    ) -> None:
+        for item in messages:
+            reply_parameters = ReplyParameters(
+                message_id=item.reply_to_message_id or message.message_id,
+                allow_sending_without_reply=True,
+            )
+            if item.sticker is not None:
+                progress.stage = "sticker_lookup"
+                sticker = await self._stickers.file_id(item.sticker)
+                progress.stage = "send"
+                await message.answer_sticker(sticker, reply_parameters=reply_parameters)
+                progress.chunk_count += 1
+                progress.stage = "render"
+                continue
+            for chunk, entities in render_markdown(item.text):
+                progress.stage = "send"
+                await message.answer(
+                    chunk,
+                    entities=entities,
+                    parse_mode=None,
+                    reply_parameters=reply_parameters,
+                )
+                progress.chunk_count += 1
+                progress.stage = "render"

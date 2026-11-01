@@ -33,6 +33,7 @@ containers =
     dashulya.main
 layers =
     runtime
+    migrations
     container
     providers
     config
@@ -73,7 +74,7 @@ layers =
     router
     handlers
     middlewares | replies
-    reactions
+    reactions | stickers
     images
     messages
     formatting | media_frames | chat_actions

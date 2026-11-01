@@ -38,12 +38,18 @@ and [Ostrikov's chat](https://t.me/aostrikov_agents_chat)
   optional question in its caption, or reply to a picture with your question.
 - **Understand stickers.** Static stickers use their original image; animated
   and video stickers use Telegram's static thumbnail, with motion unavailable.
+- **Send her own stickers.** Choose from the six emotions in
+  [DashulyaAI](https://t.me/addstickers/DashulyaAI), either on their own or alongside
+  a text answer. Stickers share the ordered three-message limit and reply-target
+  rules; substantive questions still receive text.
 - **Find earlier discussions.** Recall saved originals by keywords and meaning,
   with original Telegram links and surrounding replies.
 - **Save received messages.** Persist group messages from all participants and
   the owner's private messages, including edits and successfully delivered replies.
 - **Inspect original history.** Read full sources, page through saved messages,
   resolve sender identities and count literal matches independently of embeddings.
+  Reading a saved image message also supplies its picture or media preview from
+  cache or Telegram when a file reference is available.
 - **Search the web.** With `KEENABLE_API_KEY` configured, find current public information
   through Keenable and read source pages, with links in the answer.
 - **Keep track of groups.** List groups the bot has observed, preserving the
@@ -257,7 +263,11 @@ in seconds and `outcome=rate_limited`. Typing errors produce a redacted warning.
 The typing task is cancelled and awaited when generation ends, so it cannot
 delay reply delivery.
 Agent output text is included with credential redaction. Input conversation text,
-image bytes, tool arguments/results and provider error bodies remain excluded.
+image bytes, tool results and provider error bodies remain excluded. History SQL
+is logged explicitly: `chat_history` tool events include the `sql` list and call
+ID; `History SQL query started/completed` events add each query's index, batch ID,
+trusted chat/message IDs, duration, outcome, returned row count and truncation.
+Credential redaction applies to SQL too; other tool arguments stay excluded.
 
 ## Getting started
 
@@ -278,6 +288,7 @@ BOT_TOKEN=your_bot_token
 OWNER_USER_ID=your_numeric_telegram_user_id
 OPENAI_API_KEY=your_openai_api_key
 POSTGRES_PASSWORD=generated_random_hex_password
+POSTGRES_APP_PASSWORD=different_generated_random_hex_password
 ```
 
 Create a bot through [@BotFather](https://t.me/BotFather). Use your numeric
@@ -290,7 +301,10 @@ Set `KEENABLE_API_KEY` to enable [Keenable MCP tools](https://docs.keenable.ai/m
 The reply agent receives `search_web_pages` (five results with bounded snippets) and
 `fetch_page_content` (one public URL per call, up to 12000 characters). Page reads
 use the indexed copy by default; `live=true` fetches current or unindexed pages.
-The MCP endpoint is `https://api.keenable.ai/mcp`, authenticated with `X-API-Key`.
+AG2's `MCPToolkit` connects to `https://api.keenable.ai/mcp`, authenticated with
+`X-API-Key`, and discovers the two allowed tools on the first reply. Discovery is cached;
+if it fails, the bot can still reply without web tools and discovery can recover
+on a later turn.
 Without the key, those tools are absent and conversations and chat memory
 remain available. The addressing classifier never receives web tools. Search and page contents are untrusted evidence;
 answers should cite their original URLs. Web-tool failures are reported without
@@ -299,9 +313,29 @@ log `mcp_is_error`, a safe `error_category`, and recognized error codes or HTTP
 statuses when present. Unrecognized responses retain the `unknown` category;
 raw provider messages and query arguments are omitted.
 
-Generate `POSTGRES_PASSWORD` with `openssl rand -hex 32`. Keep it stable for an
-existing database. Compose supplies the internal `DATABASE_URL`; direct Python
+Generate each database password separately with `openssl rand -hex 32`. Keep
+`POSTGRES_PASSWORD` stable for an existing database. `POSTGRES_APP_PASSWORD`
+authenticates the nonadministrative runtime login `dashulya_app`; the migration
+service creates it and sets its password. Compose supplies the internal `DATABASE_URL`; direct Python
 and CLI runs need a URL for a reachable PostgreSQL server with pgvector installed.
+
+For a PostgreSQL server outside Compose, first create the target database using
+an administrator and install the pgvector extension package on the server. Then run:
+
+```sh
+# MIGRATION_DATABASE_URL uses the database administrator; DATABASE_URL uses dashulya_app.
+uv run python -m dashulya.main.migrations
+```
+
+Set `MIGRATION_DATABASE_URL` and `POSTGRES_APP_PASSWORD` in `.env` before this
+command. Repeating it checks applied migration checksums and updates the runtime
+password without rerunning migrations. Do not edit an applied SQL file: add a new
+numbered migration. Runtime startup refuses a missing or outdated schema.
+The target database is dedicated to Dashulya: the role migration revokes PUBLIC
+CREATE on its application schema and PUBLIC execution of `pg_catalog.set_config`.
+The reader role is NOLOGIN and entered with SET LOCAL ROLE; it needs no password.
+It can SELECT the scoped temporary history view and cannot read base tables.
+See [the SQL access decision](docs/adr/0006-scope-model-sql-with-postgresql-views.md).
 
 ### 2. Import optional existing data
 
@@ -318,7 +352,10 @@ before it can be exposed to that group; an unbound archive remains private-only.
 docker compose up -d --build --wait
 ```
 
-Startup initializes the PostgreSQL schema and vector cache, attempts pending
+Compose first runs the `migrate` service under the PostgreSQL administrator.
+It applies the numbered SQL files in [database/migrations](src/dashulya/database/migrations),
+records checksums, adopts an existing unversioned schema and provisions runtime
+roles. The bot then verifies the migration journal, opens the vector cache, attempts pending
 embedding preparation, verifies the Telegram bot identity and starts polling.
 Embedding errors leave canonical history available and indexing queued for retry.
 Docker's agent health check reflects completed startup, rather than complete

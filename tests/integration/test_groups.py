@@ -8,6 +8,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import Update, User
 
 from dashulya.database import Database
+from dashulya.database.migrate import migrate
 from dashulya.domain.groups import Group, GroupRegistry
 from dashulya.main import create_container
 from dashulya.main.config import Settings
@@ -309,6 +310,9 @@ class TestGroupPersistence:
             await connection.execute(
                 "INSERT INTO groups VALUES (%s,%s,%s)", (-123, "Existing group", None)
             )
+        async with self.database.connection() as connection:
+            await connection.execute("DELETE FROM schema_migrations")
+        await migrate(self.database_url)
         reopened = Database(self.database_url)
         self.cleanup.push_async_callback(reopened.close)
         await reopened.open()

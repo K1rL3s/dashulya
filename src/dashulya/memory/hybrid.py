@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from dashulya.domain.memory import MemoryInputError, OriginalMessage
+from dashulya.memory._timing import search_stage
 from dashulya.memory._workers import run_in_thread
 from dashulya.memory.lexical import LexicalIndex
 from dashulya.memory.ranking import reciprocal_rank_fusion, select_source_diverse
@@ -276,8 +277,14 @@ class HybridMemory:
         originals: Sequence[OriginalMessage],
         vectors: EmbeddingCache,
         lexical: LexicalIndex,
+        *,
+        primary_ids: frozenset[str] | None = None,
     ) -> None:
         self._blocks = _blocks(originals)
+        if primary_ids is not None:
+            self._blocks = [
+                block for block in self._blocks if block[-1].source_id in primary_ids
+            ]
         self._dates = [_time(block[-1]) for block in self._blocks]
         self._vectors = vectors
         self._lexical = lexical
@@ -309,21 +316,27 @@ class HybridMemory:
         eligible = await run_in_thread(lambda: self._eligible(author_id, after, before))
         if not eligible:
             return []
-        await self._lexical.prepare(self._texts)
-        lexical = await self._lexical.search(
-            self._lexical_keys,
-            [self._lexical_keys[i] for i in sorted(eligible)],
-            query_terms(query),
-            limit=_QUERY_CANDIDATES,
-        )
+        with search_stage("lexical_prepare"):
+            await self._lexical.prepare(self._texts)
+        with search_stage("lexical_search"):
+            lexical = await self._lexical.search(
+                self._lexical_keys,
+                [self._lexical_keys[i] for i in sorted(eligible)],
+                query_terms(query),
+                limit=_QUERY_CANDIDATES,
+            )
         lex_positions = {key: i for i, key in enumerate(self._lexical_keys)}
         rankings = [[lex_positions[key] for key in lexical]]
         vector_keys = [self._vector_keys[i] for i in sorted(eligible)]
-        if await self._vectors.saved_keys(vector_keys):
-            query_vector = (await self._vectors.vectors([query]))[query]
-            dense = await self._vectors.nearest(
-                vector_keys, query_vector, limit=_QUERY_CANDIDATES
-            )
+        with search_stage("vector_coverage"):
+            has_vectors = bool(await self._vectors.saved_keys(vector_keys))
+        if has_vectors:
+            with search_stage("query_embedding"):
+                query_vector = (await self._vectors.vectors([query]))[query]
+            with search_stage("dense_search"):
+                dense = await self._vectors.nearest(
+                    vector_keys, query_vector, limit=_QUERY_CANDIDATES
+                )
             positions = {key: i for i, key in enumerate(self._vector_keys)}
             rankings.append([positions[key] for key in dense])
         fused = reciprocal_rank_fusion(rankings, tie_order={i: i for i in eligible})

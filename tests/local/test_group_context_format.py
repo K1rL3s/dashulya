@@ -51,8 +51,13 @@ class TestGroupContextFormat:
         )
         rendered = formatter.context([message])[1]
         assert rendered["role"] == "user"
-        assert rendered["text"].startswith(f'<external_input source="{source}">')
-        assert input_payload(rendered["text"]).endswith("\n" + body)
+        header, separator, _ = rendered["text"].partition(
+            f'\n<external_input source="{source}">\n'
+        )
+        assert separator
+        assert header.startswith("25 October 2026 (Sunday)\nUser ")
+        assert '23:59:00 {"id":1,' in header
+        assert input_payload(rendered["text"]) == body
 
     def test_only_this_bot_retains_unwrapped_native_assistant_messages(self) -> None:
         rendered = MessageFormatter(bot_id=123, owner_id=42).context([
@@ -62,7 +67,10 @@ class TestGroupContextFormat:
         assert rendered[1]["role"] == "assistant"
         assert "<external_input" not in rendered[1]["text"]
         assert rendered[2]["role"] == "user"
-        assert rendered[2]["text"].startswith('<external_input source="bot">')
+        assert (
+            '\n<external_input source="bot">\nOriginal\n</external_input>'
+            in rendered[2]["text"]
+        )
 
     def test_context_supplies_one_citation_template_for_public_and_private_supergroups(
         self,
@@ -217,6 +225,7 @@ class TestGroupContextFormat:
         assert joined.count("26 October 2026 (Monday)") == 1
         assert "User 123:" not in joined
         assert "User 42:" not in rendered[0]["text"]
+        assert "<external_input" not in rendered[0]["text"]
         assert (
             "25 October 2026 (Sunday)\nUser 42: Alice (@alice)\n" in rendered[1]["text"]
         )
@@ -364,11 +373,13 @@ class TestGroupContextFormat:
             interlocutor_id=42,
         )
         assert (
-            input_payload(rendered[1]["text"])
-            == '25 October 2026 (Sunday)\nUser 42: Alice (@alice)\n23:59:00 {"id":1,"user_id":42}\nOriginal'
+            rendered[1]["text"]
+            == '25 October 2026 (Sunday)\nUser 42: Alice (@alice)\n23:59:00 {"id":1,"user_id":42}\n'
+            '<external_input source="external_user">\nOriginal\n</external_input>'
         )
         assert (
-            input_payload(rendered[2]["text"])
+            rendered[2]["text"]
             == 'Interlocutor user id: 42\n23:59:00 {"id":2,"user_id":42,"reply_to":1}\n'
-            + body
+            '<external_input source="external_user">\n' + body + "\n</external_input>"
         )
+        assert input_payload(rendered[2]["text"]) == body

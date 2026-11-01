@@ -1,12 +1,10 @@
-"""Bounded metadata engines with serialized leases and shutdown draining."""
+"""Bounded immutable metadata engines with concurrent leases and shutdown draining."""
 
 import asyncio
-import hashlib
-import json
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 
 from dashulya.domain.memory import OriginalMessage
 from dashulya.memory._workers import run_in_thread
@@ -19,15 +17,6 @@ from dashulya.memory.vectors import EmbeddingCache
 class _CachedEngine:
     engine: HybridMemory
     users: int = 0
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-
-
-def _fingerprint(originals: Sequence[OriginalMessage]) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            [asdict(item) for item in originals], default=str, sort_keys=True
-        ).encode()
-    ).hexdigest()
 
 
 class EngineCache:
@@ -40,7 +29,9 @@ class EngineCache:
     def __init__(self, vectors: EmbeddingCache, lexical: LexicalIndex) -> None:
         self.vectors = vectors
         self.lexical = lexical
-        self._engines: OrderedDict[str, _CachedEngine] = OrderedDict()
+        self._engines: OrderedDict[
+            tuple[int, tuple[OriginalMessage, ...], frozenset[str] | None], _CachedEngine
+        ] = OrderedDict()
         self._engine_lock = asyncio.Lock()
         self._index_generation = 0
         self._closed = False
@@ -57,18 +48,25 @@ class EngineCache:
 
     @asynccontextmanager
     async def lease(
-        self, originals: Sequence[OriginalMessage]
+        self,
+        originals: Sequence[OriginalMessage],
+        *,
+        primary_ids: frozenset[str] | None = None,
     ) -> AsyncGenerator[HybridMemory, None]:
-        fingerprint = await asyncio.to_thread(_fingerprint, originals)
+        # Frozen originals are value keys: equality checks every field, including
+        # private file references, without serializing all message text to JSON.
+        snapshot = tuple(originals)
         async with self._engine_lock:
-            key = f"{self._index_generation}:{fingerprint}"
+            key = (self._index_generation, snapshot, primary_ids)
             if self._closed:
                 error_message = "Memory retrieval is closed."
                 raise RuntimeError(error_message)
             entry = self._engines.get(key)
             if entry is None:
                 engine = await run_in_thread(
-                    lambda: HybridMemory(originals, self.vectors, self.lexical)
+                    lambda: HybridMemory(
+                        originals, self.vectors, self.lexical, primary_ids=primary_ids
+                    )
                 )
                 entry = _CachedEngine(engine)
                 self._engines[key] = entry
@@ -78,8 +76,7 @@ class EngineCache:
         try:
             async with self._engine_lock:
                 self._evict()
-            async with entry.lock:
-                yield entry.engine
+            yield entry.engine
         finally:
             async with self._engine_lock:
                 entry.users -= 1

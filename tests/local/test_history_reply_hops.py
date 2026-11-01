@@ -63,7 +63,7 @@ class TestHistoryReplyHops:
         for hops in (0, 1, 3, 5, 8, 100):
             with subtests.test(hops=hops):
                 result = await self.reader.query(
-                    "read", source_id=original(9).source_id, parent_hops=hops
+                    "list", limit=1, source_id=original(9).source_id, parent_hops=hops
                 )
                 assert [m["message_id"] for m in result["messages"]] == [9]
                 assert [m["message_id"] for m in result["context"]] == list(
@@ -76,14 +76,16 @@ class TestHistoryReplyHops:
                     assert cut["remaining_hops"] == 8 - hops
                 else:
                     assert result["truncated_threads"] == {}
-        default = await self.reader.query("read", source_id=original(9).source_id)
+        default = await self.reader.query(
+            "list", limit=1, source_id=original(9).source_id
+        )
         assert default["parent_hops"] == 5
         assert [m["message_id"] for m in default["context"]] == [4, 5, 6, 7, 8]
 
     async def test_navigation_fetches_every_omitted_parent_in_one_call(self) -> None:
         first = self.formatter.result(
             await self.reader.query(
-                "read", source_id=original(9).source_id, parent_hops=2
+                "list", limit=1, source_id=original(9).source_id, parent_hops=2
             )
         )
         cut = cut_header(first["message_blocks"][0]["text"])["7"]
@@ -92,7 +94,8 @@ class TestHistoryReplyHops:
         assert cut["source_id"] == original(1).source_id
         second = self.formatter.result(
             await self.reader.query(
-                "read",
+                "list",
+                limit=1,
                 source_id=cut["boundary_source_id"],
                 parent_hops=cut["remaining_hops"],
             )
@@ -153,7 +156,7 @@ class TestHistoryReplyHops:
             original(9, reply_to_id=4),
         ]
         result = await self.reader.query(
-            "read", source_id=original(9).source_id, parent_hops=1
+            "list", limit=1, source_id=original(9).source_id, parent_hops=1
         )
         assert [m["message_id"] for m in result["context"]] == [4]
         assert result["truncated_threads"][original(4).source_id] == {
@@ -177,7 +180,8 @@ class TestHistoryReplyHops:
                 # Traversal is synchronous after the read; mutation runs need
                 # their process deadline to interrupt a broken cycle guard.
                 result = await self.reader.query(
-                    "read",
+                    "list",
+                    limit=1,
                     source_id=original(9).source_id,
                     parent_hops=5,
                     topic_id=7 if number == 2 else None,
@@ -197,7 +201,7 @@ class TestHistoryReplyHops:
         )
         self.store.originals.return_value = [foreign, *self.originals[2:]]
         private = CanonicalHistory(self.store, MemoryAccess(42, True))
-        result = await private.query("read", source_id=original(9).source_id)
+        result = await private.query("list", limit=1, source_id=original(9).source_id)
         cut = result["truncated_threads"][original(4).source_id]
         assert cut["root_id"] is None
         assert cut["remaining_hops"] is None
@@ -227,7 +231,7 @@ class TestHistoryReplyHops:
         self,
         subtests: pytest.Subtests,
     ) -> None:
-        for action in ("count", "authors", "chats"):
+        for action in ("count", "authors"):
             with subtests.test(action=action):
                 result = await self.reader.query(action, parent_hops=100)
                 assert "context" not in result

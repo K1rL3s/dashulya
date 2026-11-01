@@ -1,4 +1,4 @@
-"""Request-correlated model output and timings, excluding inputs and tool payloads."""
+"""Request-correlated model output and tool timings, including history SQL."""
 
 import asyncio
 import json
@@ -18,6 +18,7 @@ from ag2.events import (
     ToolCallEvent,
     ToolErrorEvent,
     ToolResult,
+    ToolResultEvent,
 )
 from ag2.middleware.base import BaseMiddleware, LLMCall, ToolExecution, ToolResultType
 from fast_depends import inject
@@ -97,6 +98,23 @@ def _output_fields(response: ModelResponse) -> dict[str, object]:
     }
 
 
+def _history_sql_fields(event: ToolCallEvent) -> dict[str, object]:
+    if event.name != "chat_history":
+        return {}
+    try:
+        query = event.serialized_arguments.get("sql")
+    except (AttributeError, ValueError, TypeError):
+        return {}
+    if isinstance(query, list) and all(isinstance(item, str) for item in query):
+        return {
+            "sql": [item[:16_000] for item in query[:5]],
+            "sql_truncated": len(query) > 5
+            or any(len(item) > 16_000 for item in query[:5]),
+            "query_count": len(query),
+        }
+    return {}
+
+
 class ReplyTrace(BaseMiddleware):
     @override
     async def on_llm_call(
@@ -106,8 +124,10 @@ class ReplyTrace(BaseMiddleware):
         parts = [
             part
             for event in events
-            if isinstance(event, ModelRequest)
-            for part in event.parts
+            if isinstance(event, (ModelRequest, ToolResultEvent))
+            for part in (
+                event.parts if isinstance(event, ModelRequest) else event.result.parts
+            )
         ]
         fields.update(
             history_events=len(events),
@@ -160,6 +180,7 @@ class ReplyTrace(BaseMiddleware):
             **_request(__ctx__=context),
             "tool_name": event.name,
             "tool_call_id": event.id,
+            **_history_sql_fields(event),
         }
         started = perf_counter()
         logger.info("AI tool call started", extra=fields)

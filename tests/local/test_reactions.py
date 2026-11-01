@@ -34,6 +34,7 @@ from dashulya.ai.tools.reactions import ReactionTurn
 from dashulya.bot.chat_actions import typing
 from dashulya.bot.reactions import TelegramReactions
 from dashulya.bot.replies import ReplyDelivery
+from dashulya.bot.stickers import TelegramStickers
 from dashulya.domain.messages import ReplyBatch, ReplyRequest
 from dashulya.domain.reactions import ReactionResult
 from dashulya.main import create_container
@@ -102,7 +103,7 @@ class TestReaction:
         dialogue, _, _ = await self.dialogue(*turns)
         images = AsyncMock()
         images.load.return_value = ()
-        delivery = ReplyDelivery(self.bot, dialogue, images)
+        delivery = ReplyDelivery(self.bot, dialogue, images, TelegramStickers(self.bot))
         message = Message.model_validate({
             "message_id": 10,
             "date": SENT_AT,

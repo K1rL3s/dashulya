@@ -7,6 +7,7 @@ from ag2 import Agent
 from ag2.config import ModelConfig
 from ag2.events import TextInput, ToolResultEvent
 from aiogram import Bot
+from aiogram.types import StickerSet
 from dishka import Provider, provide
 from dishka_ag2 import AG2Scope
 
@@ -31,11 +32,41 @@ def reply_json(text: str, reply_to_message_id: int | None = None) -> str:
     })
 
 
+def dashulya_sticker_set() -> StickerSet:
+    """A local copy of the published pack's emoji, with synthetic file references."""
+    return StickerSet.model_validate({
+        "name": "DashulyaAI",
+        "title": "DashulyaAI",
+        "sticker_type": "regular",
+        "stickers": [
+            {
+                "file_id": name + "-file",
+                "file_unique_id": name + "-unique",
+                "type": "regular",
+                "width": 512,
+                "height": 512,
+                "is_animated": False,
+                "is_video": False,
+                "emoji": emoji,
+                "set_name": "DashulyaAI",
+            }
+            for name, emoji in (
+                ("joy", "😃"),
+                ("love", "😘"),
+                ("sad", "😢"),
+                ("angry", "😠"),
+                ("surprised", "😮"),
+                ("skeptical", "🤨"),
+            )
+        ],
+    })
+
+
 def input_payload(text: str) -> str:
-    """Read one provenance envelope without including transport newlines."""
-    opening, separator, body = text.partition("\n")
-    assert separator == "\n"
-    assert re.fullmatch(r'<external_input source="[^"]+">', opening)
+    """Read one provenance payload after optional application metadata."""
+    opening = re.search(r'^<external_input source="[^"]+">\n', text, re.MULTILINE)
+    assert opening is not None
+    body = text[opening.end() :]
     closing = "\n</external_input>"
     assert body.endswith(closing)
     return body[: -len(closing)]
@@ -49,7 +80,7 @@ def memory_tool_data(event: ToolResultEvent) -> dict[str, Any]:
     assert part.content.startswith('<external_input source="memory">')
     data = json.loads(input_payload(part.content))
     assert isinstance(data, dict)
-    return data
+    return data["results"][0] if "results" in data and len(data["results"]) == 1 else data
 
 
 def group_records(text: str) -> list[dict[str, Any]]:
@@ -175,7 +206,10 @@ class MemoryOverride(Provider):
         self._history = history
         if reader is None:
             reader = AsyncMock(spec=HistoryReader)
-            reader.query.return_value = {"coverage": {}, "messages": []}
+            reader.sql.return_value = {
+                "query_count": 1,
+                "results": [{"query_index": 1, "outcome": "ok", "rows": []}],
+            }
         self._service = _MemoryService(self._memory, reader)
 
     @provide(override=True)

@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from ag2 import Agent
-from ag2.events import ModelRequest, TextInput
+from ag2.events import BinaryInput, ModelRequest, TextInput
 from dotenv import load_dotenv
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
@@ -21,16 +21,11 @@ from dashulya.ai.dialogue import Dialogue
 from dashulya.ai.message_format import MessageFormatter
 from dashulya.database import Database
 from dashulya.domain.memory import MemoryMessage
-from dashulya.domain.messages import Reply
+from dashulya.domain.messages import ImageAttachment, ImageFile, ReplyBatch
 from dashulya.memory.store import MessageStore
 
 PAGE_SIZE = 80
 ROOT = Path(__file__).resolve().parent
-
-
-class ReadOnlyDatabase(Database):
-    async def _initialize_schema(self) -> None:
-        """The preview uses the existing schema and never runs migrations."""
 
 
 def message_json(message: MemoryMessage, bot_id: int | None) -> dict[str, Any]:
@@ -46,6 +41,7 @@ def message_json(message: MemoryMessage, bot_id: int | None) -> dict[str, Any]:
         "reply_to_id": message.reply_to_id,
         "topic_id": message.thread_id,
         "media_type": message.media_type,
+        "has_image_reference": message.image_file is not None,
     }
 
 
@@ -64,6 +60,7 @@ def saved_message(row: dict[str, Any]) -> MemoryMessage:
         media_type=row["media_type"],
         username=row["author_username"],
         is_bot=row["is_bot"],
+        image_file=ImageFile(**row["image_file"]) if row["image_file"] else None,
     )
 
 
@@ -73,7 +70,9 @@ class Preview:
         self.formatter = formatter
         # Selection does not execute this agent or require model credentials.
         self.dialogue = Dialogue(
-            Agent[Reply]("preview"), history=MessageStore(database), formatter=formatter
+            Agent[ReplyBatch]("preview"),
+            history=MessageStore(database),
+            formatter=formatter,
         )
 
     async def get(self, path: str, query: dict[str, list[str]]) -> dict[str, Any]:
@@ -185,30 +184,53 @@ class Preview:
             limit=limit,
             parent_hops=parent_hops,
         )
-        events = self.formatter.events(
-            selected.messages,
-            interlocutor_id=current.author_id,
-            truncated_threads=selected.truncated_threads,
+        # Empty payloads model placement only, never a successful Telegram download.
+        images = tuple(
+            ImageAttachment(
+                b"",
+                "image/jpeg",
+                item.message_id,
+                preview_kind=item.image_file.preview_kind,
+                first_frame=item.image_file.preview_kind == "animation",
+            )
+            for item in selected.messages
+            if item.image_file is not None
         )
+        events = self.dialogue.context_events(selected, images=images)
+        image_ids = {image.message_id for image in images}
+        event_ids: list[int | None] = [None]
+        for item in selected.messages:
+            event_ids.append(item.message_id)
+            if item.author_id == self.formatter.bot_id and item.message_id in image_ids:
+                event_ids.append(item.message_id)
         recent_ids = {item.message_id for item in selected.messages[-limit:]}
         event_json = []
-        for index, event in enumerate(events):
-            event_json.append(
-                {
-                    "type": type(event).__name__,
-                    "role": "user" if isinstance(event, ModelRequest) else "assistant",
-                    "text": "\n".join(
-                        part.content
-                        for part in event.parts
-                        if isinstance(part, TextInput)
-                    )
-                    if isinstance(event, ModelRequest)
-                    else event.content,
-                    "message_id": None
-                    if index == 0
-                    else selected.messages[index - 1].message_id,
-                }
-            )
+        raw_events = []
+        for source_id, event in zip(event_ids, events, strict=True):
+            raw = event.to_dict()
+            parts: list[dict[str, Any]] = []
+            if isinstance(event, ModelRequest):
+                for part, raw_part in zip(event.parts, raw["parts"], strict=True):
+                    if isinstance(part, TextInput):
+                        parts.append({"type": "TextInput", "text": part.content})
+                    elif isinstance(part, BinaryInput):
+                        parts.append({"type": "ImageInput", "preview_only": True})
+                        raw_part["data"] = "<not downloaded in preview>"
+                        raw_part["media_type"] = "<detected after download>"
+            else:
+                parts.append({"type": "ModelMessage", "text": event.content or ""})
+            raw_events.append(raw)
+            event_json.append({
+                "type": type(event).__name__,
+                "role": "user" if isinstance(event, ModelRequest) else "assistant",
+                "text": "\n".join(
+                    part.content for part in event.parts if isinstance(part, TextInput)
+                )
+                if isinstance(event, ModelRequest)
+                else event.content,
+                "message_id": source_id,
+                "parts": parts,
+            })
         return {
             "key": [chat_id, topic],
             "message_id": message_id,
@@ -225,7 +247,8 @@ class Preview:
                 for item in selected.messages
             ],
             "events": event_json,
-            "raw_events": [event.to_dict() for event in events],
+            "raw_events": raw_events,
+            "image_count": len(images),
             "truncated_threads": [asdict(item) for item in selected.truncated_threads],
             "elapsed_ms": round((perf_counter() - started) * 1000, 1),
         }
@@ -298,7 +321,7 @@ async def serve(host: str, port: int) -> None:
     if not url:
         raise SystemExit("Set DATABASE_URL in .env or the environment.")
     options = str(conninfo_to_dict(url).get("options") or "")
-    database = ReadOnlyDatabase(
+    database = Database(
         make_conninfo(
             url,
             options=options

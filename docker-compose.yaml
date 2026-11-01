@@ -1,4 +1,20 @@
 services:
+  migrate:
+    build: .
+    command: [python, -m, dashulya.main.migrations]
+    environment:
+      MIGRATION_DATABASE_URL: postgresql://dashulya:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/dashulya
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in .env}
+      PYTHONPATH: /app/src
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./src:/app/src:ro
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   agent:
     build: .
     environment:
@@ -11,7 +27,7 @@ services:
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-6-luna}
       OPENAI_DECISION_MODEL: ${OPENAI_DECISION_MODEL:-gpt-6-luna}
       BOT_TIMEZONE: ${BOT_TIMEZONE:-Europe/Moscow}
-      DATABASE_URL: postgresql://dashulya:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/dashulya
+      DATABASE_URL: postgresql://dashulya_app:${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in .env}@postgres:5432/dashulya
       PYTHONPATH: /app/src
       PYTHONDONTWRITEBYTECODE: "1"
       LOG_PATH: /var/log/dashulya/dashulya.log
@@ -24,8 +40,8 @@ services:
           create_host_path: false
       - ./var/logs:/var/log/dashulya
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   postgres:
     image: pgvector/pgvector@sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337

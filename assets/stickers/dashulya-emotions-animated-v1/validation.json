@@ -1,0 +1,116 @@
+[
+  {
+    "file": "01-joy.webm",
+    "bytes": 176704,
+    "dimensions": [
+      512,
+      512
+    ],
+    "duration_seconds": 2.8,
+    "fps": 30,
+    "frames": 84,
+    "codec": "VP9",
+    "audio_streams": 0,
+    "decoded_alpha_range": [
+      0,
+      255
+    ],
+    "all_frame_borders_transparent": true,
+    "mean_first_last_rgba_difference_out_of_255": 0.0048
+  },
+  {
+    "file": "02-kiss.webm",
+    "bytes": 222099,
+    "dimensions": [
+      512,
+      512
+    ],
+    "duration_seconds": 2.8,
+    "fps": 30,
+    "frames": 84,
+    "codec": "VP9",
+    "audio_streams": 0,
+    "decoded_alpha_range": [
+      0,
+      255
+    ],
+    "all_frame_borders_transparent": true,
+    "mean_first_last_rgba_difference_out_of_255": 1.0361
+  },
+  {
+    "file": "03-sad.webm",
+    "bytes": 169207,
+    "dimensions": [
+      512,
+      512
+    ],
+    "duration_seconds": 2.8,
+    "fps": 30,
+    "frames": 84,
+    "codec": "VP9",
+    "audio_streams": 0,
+    "decoded_alpha_range": [
+      0,
+      255
+    ],
+    "all_frame_borders_transparent": true,
+    "mean_first_last_rgba_difference_out_of_255": 0.0339
+  },
+  {
+    "file": "04-angry.webm",
+    "bytes": 165117,
+    "dimensions": [
+      512,
+      512
+    ],
+    "duration_seconds": 2.8,
+    "fps": 30,
+    "frames": 84,
+    "codec": "VP9",
+    "audio_streams": 0,
+    "decoded_alpha_range": [
+      0,
+      255
+    ],
+    "all_frame_borders_transparent": true,
+    "mean_first_last_rgba_difference_out_of_255": 0.023
+  },
+  {
+    "file": "05-surprised.webm",
+    "bytes": 111409,
+    "dimensions": [
+      512,
+      512
+    ],
+    "duration_seconds": 2.8,
+    "fps": 30,
+    "frames": 84,
+    "codec": "VP9",
+    "audio_streams": 0,
+    "decoded_alpha_range": [
+      0,
+      255
+    ],
+    "all_frame_borders_transparent": true,
+    "mean_first_last_rgba_difference_out_of_255": 0.0158
+  },
+  {
+    "file": "06-skeptical.webm",
+    "bytes": 152891,
+    "dimensions": [
+      512,
+      512
+    ],
+    "duration_seconds": 2.8,
+    "fps": 30,
+    "frames": 84,
+    "codec": "VP9",
+    "audio_streams": 0,
+    "decoded_alpha_range": [
+      0,
+      255
+    ],
+    "all_frame_borders_transparent": true,
+    "mean_first_last_rgba_difference_out_of_255": 0.0073
+  }
+]

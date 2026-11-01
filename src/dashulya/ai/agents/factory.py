@@ -70,7 +70,7 @@ def create_reply_agent(
         config=config,
         response_schema=ResponseSchema(
             ReplyBatch,
-            description="Up to three ordered Telegram messages, each with text and an optional target ID.",
+            description="Up to three ordered Telegram messages: text or a Dashulya sticker, each with an optional target ID.",
         ),
         middleware=[Middleware(ReplyTrace), *middleware],
     )

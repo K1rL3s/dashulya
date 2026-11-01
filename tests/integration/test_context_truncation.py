@@ -56,7 +56,7 @@ class TestContextTruncation:
         assert (cut.boundary_id, cut.root_id) == (4, 1)
         assert cut.remaining_hops == 3
         result = await CanonicalHistory(self.store, MemoryAccess(GROUP, False)).query(
-            "read", source_id=cut.source_id
+            "list", source_id=cut.source_id, limit=1
         )
         assert result["messages"][0]["message_id"] == 1
         assert result["messages"][0]["text"] == "Message 1"
@@ -103,7 +103,10 @@ class TestContextTruncation:
         assert cut["root_id"] == 10
         assert cut["remaining_hops"] == 4
         result = await CanonicalHistory(self.store, MemoryAccess(GROUP, False)).query(
-            "read", source_id=cut["boundary_source_id"], parent_hops=cut["remaining_hops"]
+            "list",
+            source_id=cut["boundary_source_id"],
+            parent_hops=cut["remaining_hops"],
+            limit=1,
         )
         assert [m["message_id"] for m in result["messages"]] == [300]
         assert [m["message_id"] for m in result["context"]] == [10, 40, 90, 100]

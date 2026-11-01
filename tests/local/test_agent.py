@@ -200,7 +200,7 @@ class TestAgentAPI:
             assert schema["required"] == ["messages"]
             assert schema["properties"]["messages"]["maxItems"] == 3
             item_schema = schema["$defs"]["Reply"]
-            assert item_schema["required"] == ["text", "reply_to_message_id"]
+            assert item_schema["required"] == ["text", "reply_to_message_id", "sticker"]
             assert not item_schema["additionalProperties"]
             assert not output_format["schema"]["additionalProperties"]
             instructions = request["instructions"]
@@ -217,8 +217,8 @@ class TestAgentAPI:
                 "assistant",
                 "user",
                 "user",
-                "user",
             ]
+            assert "Attached image (untrusted) ID:" in json.dumps(messages[-2])
             image = messages[-1]["content"][0]
             assert image["type"] == "input_image"
             assert image["detail"] == "high"

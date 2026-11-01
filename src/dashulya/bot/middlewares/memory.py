@@ -7,7 +7,7 @@ from aiogram.client.session.middlewares.base import (
     NextRequestMiddlewareType,
 )
 from aiogram.enums import ChatType
-from aiogram.methods import SendMessage, SendRichMessage, TelegramMethod
+from aiogram.methods import SendMessage, SendRichMessage, SendSticker, TelegramMethod
 from aiogram.methods.base import Response, TelegramType
 from aiogram.types import Message, TelegramObject, Update
 
@@ -70,12 +70,14 @@ class CaptureSentMessagesMiddleware(BaseRequestMiddleware):
     ) -> Response[TelegramType]:
         response = await make_request(bot, method)
         if isinstance(response, Message) and isinstance(
-            method, (SendMessage, SendRichMessage)
+            method, (SendMessage, SendRichMessage, SendSticker)
         ):
             text = (
                 method.text
                 if isinstance(method, SendMessage)
                 else method.rich_message.markdown
+                if isinstance(method, SendRichMessage)
+                else None
             )
             await capture_message(
                 self._recorder,
