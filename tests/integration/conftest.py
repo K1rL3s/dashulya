@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 from psycopg import AsyncConnection, sql
-from psycopg.conninfo import make_conninfo
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from dashulya.database import Database
 from dashulya.database.migrate import migrate
@@ -34,7 +34,11 @@ async def database(schema: str, database_url: str) -> AsyncIterator[Database]:
             sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema))
         )
     try:
-        await migrate(database_url)
+        # App-login tests inherit this disposable server's connection password.
+        password = conninfo_to_dict(database_url).get("password")
+        await migrate(
+            database_url, app_password=str(password) if password is not None else None
+        )
         database = Database(database_url)
         try:
             await database.open()
