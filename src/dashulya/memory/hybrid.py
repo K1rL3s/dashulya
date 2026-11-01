@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from dashulya.domain.memory import MemoryInputError, OriginalMessage
 from dashulya.memory._timing import search_stage
 from dashulya.memory._workers import run_in_thread
-from dashulya.memory.lexical import LexicalIndex
+from dashulya.memory.lexical import LexicalDocument, LexicalIndex
 from dashulya.memory.ranking import reciprocal_rank_fusion, select_source_diverse
 from dashulya.memory.vectors import EmbeddingCache
 
@@ -266,8 +266,11 @@ class HybridHit:
     score: float
 
 
-def lexical_texts(originals: Sequence[OriginalMessage]) -> list[str]:
-    return ["\n\n".join(_render(m) for m in block) for block in _blocks(originals)]
+def lexical_documents(originals: Sequence[OriginalMessage]) -> list[LexicalDocument]:
+    return [
+        LexicalDocument(block[-1].collection, "\n\n".join(_render(m) for m in block))
+        for block in _blocks(originals)
+    ]
 
 
 class HybridMemory:
@@ -290,6 +293,10 @@ class HybridMemory:
         self._vectors = vectors
         self._lexical = lexical
         self._texts = ["\n\n".join(_render(m) for m in block) for block in self._blocks]
+        self._lexical_documents = [
+            LexicalDocument(block[-1].collection, text)
+            for block, text in zip(self._blocks, self._texts, strict=True)
+        ]
         self._lexical_keys = [lexical.key(text) for text in self._texts]
         self._vector_keys = [
             vectors.key(_embedding_text(block)) for block in self._blocks
@@ -351,10 +358,10 @@ class HybridMemory:
 
     async def _lexical_ranking(self, query: str, eligible: set[int]) -> list[int]:
         with search_stage("lexical_prepare"):
-            await self._lexical.prepare(self._texts)
+            await self._lexical.prepare(self._lexical_documents)
         with search_stage("lexical_search"):
             lexical = await self._lexical.search(
-                self._lexical_keys,
+                self._lexical_documents,
                 [self._lexical_keys[i] for i in sorted(eligible)],
                 query_terms(query),
                 limit=_QUERY_CANDIDATES,

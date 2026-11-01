@@ -191,6 +191,10 @@ async def test_reader_has_no_base_table_write_or_setting_privileges(
         sql.SQL("DELETE FROM {}").format(sql.Identifier(schema, "messages")),
         sql.SQL("SELECT pg_catalog.set_config('role','none',true)"),
         sql.SQL("SELECT * FROM {}").format(sql.Identifier(schema, "embeddings")),
+        sql.SQL("SELECT * FROM {}").format(
+            sql.Identifier(schema, "lexical_cache_config")
+        ),
+        sql.SQL("SELECT * FROM {}").format(sql.Identifier(schema, "lexical_snapshots")),
     ]:
         async with (
             await AsyncConnection.connect(

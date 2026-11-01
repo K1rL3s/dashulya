@@ -259,6 +259,44 @@ class TestMemoryService:
         assert [s["message_id"] for s in results[1]["hits"][0]["sources"]] == [2]
         self.embed.assert_not_awaited()
 
+    async def test_native_snapshots_exclude_late_parent_edits_and_deleted_parents(
+        self,
+    ) -> None:
+        parent = self.message(-1001, "oldparentword", number=1)
+        child = replace(
+            self.message(-1001, "acknowledged", number=2),
+            sent_at=NOW + timedelta(minutes=1),
+            reply_to_id=1,
+        )
+        await self.live.record(parent)
+        await self.live.record(child)
+        current = self.service.recall(MemoryAccess(-1001, False))
+        assert (await current.search("oldparentword"))["hits"]
+        await self.live.record(
+            replace(
+                parent,
+                text="futureparentword",
+                edited_at=NOW + timedelta(hours=2),
+                update_id=2,
+            )
+        )
+        assert (await current.search("futureparentword"))["hits"]
+        historical = self.service.recall(
+            MemoryAccess(-1001, False, before=NOW + timedelta(hours=1))
+        )
+        assert (await historical.search("futureparentword"))["hits"] == []
+        assert (await historical.search("oldparentword"))["hits"] == []
+        selected = await historical.search("acknowledged")
+        assert [s["message_id"] for h in selected["hits"] for s in h["sources"]] == [2]
+        assert "futureparentword" not in str(selected)
+        async with self.database.connection() as connection:
+            await connection.execute(
+                "DELETE FROM messages WHERE collection='telegram:-1001' AND message_id=1"
+            )
+        assert (await current.search("futureparentword"))["hits"] == []
+        assert (await current.search("acknowledged"))["hits"]
+        self.embed.assert_not_awaited()
+
     async def test_shutdown_waits_for_supporting_context_loading(self) -> None:
         await self.live.record(self.message(-1001, "Aurora source"))
         await self.service.refresh_once()

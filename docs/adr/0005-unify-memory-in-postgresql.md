@@ -1,11 +1,15 @@
 # Unify chat memory in PostgreSQL with pgvector
 
+[ADR 0008](0008-use-chat-isolated-paradedb.md) supersedes this decision's SQL
+lexical scorer with chat-isolated ParadeDB snapshots. The canonical storage,
+embedding cache and access rules below remain in force.
+
 The legacy adapters, migration CLI and SQLite reference tests described below
 were subsequently retired by [ADR 0007](0007-retire-legacy-storage.md).
 The Unicode 6.1 tokenization data remains part of the PostgreSQL implementation.
 
 Use one PostgreSQL database for imported and received originals, the group
-registry, durable indexing revisions, lexical postings and embeddings. Both
+registry, durable indexing revisions, search data and embeddings. Both
 memory tools and immediate reply context read the same canonical message rows.
 This supersedes the SQLite storage/execution details in
 [ADR 0004](0004-select-source-hybrid-memory.md), preserving its hybrid pipeline
@@ -25,14 +29,9 @@ block keys before ordering and `LIMIT`. Add ANN only after measuring a need and
 checking recall under those filters; pgvector documents possible underfilled
 results from approximate scans with post-filtering.
 
-Retain BM25 in SQL over token postings, with prefix matching and corpus statistics
-computed only over the authorized snapshot. Keep the existing Russian query
-heuristics, BM25 constants, bounded candidates, RRF and source diversity.
-PostgreSQL `ts_rank` is not an equivalent replacement for FTS5 BM25. Unicode 6.1
-tables derived from SQLite preserve document tokenization and case folding,
-including unassigned characters and combining marks. SQLite FTS5 reference tests
-and the local corpus comparison check compatibility. SQLite is an offline
-oracle/input only.
+Lexical ranking and its isolated native indexes follow
+[ADR 0008](0008-use-chat-isolated-paradedb.md). Unicode 6.1 tables preserve
+document normalization; bounded candidates, RRF and source diversity remain.
 
 Migration reads legacy SQLite files without modifying them, merges originals by
 chat/message identity, copies cached vectors without provider calls, and checks
@@ -50,5 +49,4 @@ The former 16.12 image had a Unicode substring regression on compressed original
 not change for this PostgreSQL minor upgrade.
 
 References: [Psycopg async pools](https://www.psycopg.org/psycopg3/docs/advanced/pool.html),
-[pgvector exact search and filtering](https://github.com/pgvector/pgvector/blob/v0.8.1/README.md),
-[FTS5 BM25](https://sqlite.org/fts5.html#the_bm25_function).
+[pgvector exact search and filtering](https://github.com/pgvector/pgvector/blob/v0.8.1/README.md).

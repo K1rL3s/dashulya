@@ -23,7 +23,7 @@ async def run(settings: Settings) -> None:
             "Bot starting",
             extra={
                 "model": settings.openai_model,
-                "memory_backend": "pgvector",
+                "memory_backend": "paradedb_pgvector",
             },
         )
         bot = await container.get(Bot)

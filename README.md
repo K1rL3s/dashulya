@@ -61,7 +61,7 @@ Try questions such as:
 >
 > Who was considering reusing Osinara for a bot with custom skills?
 
-Memory uses canonical PostgreSQL originals, BM25 keyword search and pgvector dense
+Memory uses canonical PostgreSQL originals, ParadeDB BM25 keyword search and pgvector dense
 embeddings over messages with their reply parents. An imported snapshot is
 optional. Groups can recall only their own chat, across topics; the owner's
 private conversation can recall all saved chats. Imported archives need an
@@ -272,7 +272,8 @@ Credential redaction applies to SQL too; other tool arguments stay excluded.
 ## Getting started
 
 You need Docker with Compose, a Telegram bot token and an OpenAI API key.
-Run commands from the project root. Compose starts PostgreSQL with pgvector and
+Run commands from the project root. Compose starts PostgreSQL with pgvector,
+ParadeDB `pg_search` 0.26.4 and
 the agent. The database can start empty; importing an existing corpus is optional.
 
 ### 1. Configure the application
@@ -317,10 +318,12 @@ Generate each database password separately with `openssl rand -hex 32`. Keep
 `POSTGRES_PASSWORD` stable for an existing database. `POSTGRES_APP_PASSWORD`
 authenticates the nonadministrative runtime login `dashulya_app`; the migration
 service creates it and sets its password. Compose supplies the internal `DATABASE_URL`; direct Python
-and CLI runs need a URL for a reachable PostgreSQL server with pgvector installed.
+and CLI runs need a URL for a reachable PostgreSQL server with pgvector and
+`pg_search` 0.26.4 installed.
 
 For a PostgreSQL server outside Compose, first create the target database using
-an administrator and install the pgvector extension package on the server. Then run:
+an administrator and install the pgvector and `pg_search` 0.26.4 extension packages
+on the server. Then run:
 
 ```sh
 # MIGRATION_DATABASE_URL uses the database administrator; DATABASE_URL uses dashulya_app.
@@ -352,6 +355,24 @@ Embedding errors leave canonical history available and indexing queued for retry
 Docker's agent health check reflects completed startup, rather than complete
 embedding coverage.
 
+The [database image](Dockerfile.postgres) adds ParadeDB to PostgreSQL 16 and
+preserves the existing pgvector 0.8.7 binaries and extension files. Migrations
+preserve originals and embeddings; the follow-up cleanup migration removes the
+retired SQL posting tables.
+Lexical indexes are built lazily or by background preparation for each chat's
+exact authorized snapshot, with eight idle snapshots retained on disk. A new
+snapshot has an index-building cost; repeated searches reuse it. See
+[the search decision](docs/adr/0008-use-chat-isolated-paradedb.md).
+
+The database base image moves from Debian 12 to Debian 13. For an existing stand,
+stop the agent and any other writers, retain a full database backup, then start
+only PostgreSQL with `docker compose up -d --build --no-deps --wait postgres`.
+Check `pg_database_collation_actual_version(oid)` against
+`pg_database.datcollversion`; for a changed libc collation, rebuild that database's
+indexes with `REINDEX DATABASE` and then `ALTER DATABASE ... REFRESH COLLATION VERSION`.
+After this maintenance, use `docker compose up -d --wait` to run migrations and
+restart the agent. Keep the previous image and backup until validation completes.
+
 Open the bot in Telegram and send `/start`, then a message. Inspect and stop the
 stack with:
 
@@ -361,8 +382,8 @@ docker compose logs -f agent
 docker compose down
 ```
 
-The [Compose file](docker-compose.yaml) persists originals, the registry, lexical
-postings and embeddings in `var/postgres/`, and logs in `var/logs/`. PostgreSQL
+The [Compose file](docker-compose.yaml) persists originals, the registry, native
+search snapshots and embeddings in `var/postgres/`, and logs in `var/logs/`. PostgreSQL
 has no published host port. These directories survive container recreation and
 are excluded from Git. Back up the running database with `pg_dump`; copy its data
 directory only while PostgreSQL is stopped. Runtime, maintenance and storage
@@ -411,9 +432,13 @@ database in read-only mode, without Telegram or model calls.
 
 GitHub Actions runs the development checks on pushes to `main` and pull requests.
 Tests and package builds run on Python 3.12, 3.13, and 3.14 without live Telegram
-or model API calls. PostgreSQL integration tests use a disposable schema per test.
-Set `TEST_DATABASE_URL` to an isolated pgvector-enabled test database before
-running `just test` or `just check`; CI provisions it automatically. The full
+or model API calls. PostgreSQL integration tests use a disposable schema per test;
+the bootstrap check also creates and drops a separate database from `template0`
+to verify extension installation. The test administrator needs CREATE DATABASE
+and CREATE ROLE privileges.
+Set `TEST_DATABASE_URL` to an isolated PostgreSQL database with pgvector and
+`pg_search` 0.26.4 before running `just test` or `just check`; CI provisions it
+automatically. The full
 suite fails immediately if this variable is missing. Never point it at
 application data.
 

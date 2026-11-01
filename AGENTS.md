@@ -53,7 +53,9 @@ module design, dependency assembly, and conversation state placement rules.
   [the access ADR](docs/adr/0003-bind-chat-memory-access.md).
 - **Capture, edits, retries or indexing workers:** read
   [incoming-message rules](docs/design/chat-memory.md#incoming-group-messages).
-- **SQL ranking or bulk-loading originals:** read
+- **Lexical scoring, snapshot indexes or their cache:** read
+  [the ParadeDB decision](docs/adr/0008-use-chat-isolated-paradedb.md).
+- **Bulk-loading originals or changing canonical storage:** read
   [the storage ADR](docs/adr/0005-unify-memory-in-postgresql.md).
 - **Model-generated history SQL:** read
   [ADR 0006](docs/adr/0006-scope-model-sql-with-postgresql-views.md).

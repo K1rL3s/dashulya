@@ -64,7 +64,7 @@ cancels/joins the worker first, then drains active retrieval leases before the
 client and database pool close. Completed batches and pending revisions survive
 restarts. SQL operations use async pooled connections; only
 metadata construction runs in CPU threads. Ranking uses native
-pgvector and SQL BM25, then bounded RRF in Python. Cancelled SQL returns its
+pgvector and ParadeDB BM25, then bounded RRF in Python. Cancelled SQL returns its
 connection safely to the pool.
 
 `AgentProvider` supplies the same store and an application-scoped `MessageFormatter`

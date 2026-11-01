@@ -49,6 +49,14 @@ async def database(schema: str, database_url: str) -> AsyncIterator[Database]:
         async with await AsyncConnection.connect(
             server_url, autocommit=True
         ) as connection:
+            cursor = await connection.execute(
+                "SELECT 'dashulya_bm25_' || md5(%s) AS namespace", (schema,)
+            )
+            row = await cursor.fetchone()
+            assert row is not None
+            await connection.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(row[0]))
+            )
             await connection.execute(
                 sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
             )

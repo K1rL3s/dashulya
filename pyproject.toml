@@ -73,6 +73,7 @@ show_contexts = true
 
 [tool.mutmut]
 source_paths = ["src/dashulya/"]
+also_copy = ["evals/suites"]
 pytest_add_cli_args = ["--no-cov"]
 pytest_add_cli_args_test_selection = ["tests/"]
 

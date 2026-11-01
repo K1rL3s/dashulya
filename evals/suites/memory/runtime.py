@@ -84,7 +84,7 @@ class MemoryToolsProvider(Provider):
 def database_url() -> str:
     url = os.environ.get("EVAL_DATABASE_URL", "").strip()
     if not url:
-        msg = "Set EVAL_DATABASE_URL to an isolated pgvector evaluation database."
+        msg = "Set EVAL_DATABASE_URL to an isolated PostgreSQL evaluation database with pgvector and pg_search."
         raise ValueError(msg)
     app_url = os.environ.get("DATABASE_URL")
     if app_url:
@@ -119,6 +119,14 @@ async def isolated_database(url: str) -> AsyncGenerator[Database, None]:
     finally:
         await database.close()
         async with await AsyncConnection.connect(url, autocommit=True) as connection:
+            cursor = await connection.execute(
+                "SELECT 'dashulya_bm25_' || md5(%s)", (schema,)
+            )
+            row = await cursor.fetchone()
+            assert row is not None
+            await connection.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(row[0]))
+            )
             await connection.execute(
                 sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
             )

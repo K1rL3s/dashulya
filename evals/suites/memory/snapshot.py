@@ -10,7 +10,7 @@ from psycopg.rows import dict_row
 
 from dashulya.database import Database
 
-TABLES = ("collections", "messages", "embeddings", "lexical_documents", "lexical_terms")
+TABLES = ("collections", "messages", "embeddings")
 
 
 async def copy_snapshot(

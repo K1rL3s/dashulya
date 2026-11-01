@@ -22,8 +22,7 @@ def markdown(
         (
             f"Snapshot preparation: {snapshot['duration_ms'] / 1000:.2f} s; "
             f"{snapshot['counts']['messages']:,} originals; "
-            f"{snapshot['counts']['embeddings']:,} cached vectors; "
-            f"{snapshot['counts']['lexical_terms']:,} postings. "
+            f"{snapshot['counts']['embeddings']:,} cached vectors. "
             "The source connection was read-only. Preparation made zero embedding API calls."
         ),
         "",

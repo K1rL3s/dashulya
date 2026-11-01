@@ -24,6 +24,14 @@ async def require_schema(connection: AsyncConnection[dict[str, Any]]) -> None:
             applied.get(path.name) == hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted(MIGRATIONS.glob("*.sql"))
         ):
+            extension = await (
+                await connection.execute(
+                    "SELECT extversion FROM pg_extension WHERE extname='pg_search'"
+                )
+            ).fetchone()
+            if extension is None or extension["extversion"] != "0.26.4":
+                msg = "PostgreSQL requires pg_search 0.26.4."
+                raise RuntimeError(msg)
             return
     msg = "Database migrations are required: run python -m dashulya.main.migrations."
     raise RuntimeError(msg)

@@ -7,7 +7,7 @@ from contextlib import suppress
 
 from dashulya.domain.memory import MemoryAccess
 from dashulya.memory.history import CanonicalHistory
-from dashulya.memory.hybrid import embedding_texts, lexical_texts
+from dashulya.memory.hybrid import embedding_texts, lexical_documents
 from dashulya.memory.lexical import LexicalIndex
 from dashulya.memory.store import MessageStore
 from dashulya.memory.vectors import EmbeddingCache
@@ -39,7 +39,7 @@ class IndexingWorker:
         pending = await self.store.pending(limit=None)
         originals = await self._history.originals()
         texts = await asyncio.to_thread(embedding_texts, originals)
-        await self.lexical.prepare(await asyncio.to_thread(lexical_texts, originals))
+        await self.lexical.prepare(await asyncio.to_thread(lexical_documents, originals))
         await self.vectors.vectors(texts, load_vectors=False)
         await self._on_prepared()
         # A newer edit cannot be acknowledged by an older embedding batch.

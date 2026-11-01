@@ -1,0 +1,8 @@
+# Preserve the installed vector version when adding pg_search to PostgreSQL 16.
+FROM pgvector/pgvector@sha256:0dd3149a06e4579a0d70d8fef9945636cd514005e7237deb27f9b67886f8dc4f AS vector
+FROM paradedb/paradedb@sha256:d92e8669dbc18fb75d4d0caf61a090691bf0cf3fb3f66dd30b3de66b39fa4685
+
+COPY --from=vector /usr/lib/postgresql/16/lib/vector.so /usr/lib/postgresql/16/lib/vector.so
+COPY --from=vector /usr/share/postgresql/16/extension/vector* /usr/share/postgresql/16/extension/
+COPY --from=vector /usr/lib/postgresql/16/lib/bitcode/vector /usr/lib/postgresql/16/lib/bitcode/vector
+COPY --from=vector /usr/lib/postgresql/16/lib/bitcode/vector.index.bc /usr/lib/postgresql/16/lib/bitcode/vector.index.bc

@@ -14,7 +14,7 @@ def require_database_url() -> str:
     url = os.getenv("TEST_DATABASE_URL", "").strip()
     if not url:
         error = (
-            "Set TEST_DATABASE_URL to an isolated pgvector-enabled test database "
+            "Set TEST_DATABASE_URL to an isolated PostgreSQL database with pgvector and pg_search 0.26.4 "
             "for the full suite, or run just test-local without PostgreSQL."
         )
         raise RuntimeError(error)

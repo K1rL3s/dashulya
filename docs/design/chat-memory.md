@@ -1,10 +1,12 @@
 # Chat memory
 
 The current runtime uses `HybridChatMemory`: canonical PostgreSQL originals with
-BM25 keyword recall and cached dense embeddings. It exposes two independent
+ParadeDB BM25 keyword recall and cached dense embeddings. It exposes two independent
 read tools, `search_memory` and `chat_history`.
 [ADR 0005](../adr/0005-unify-memory-in-postgresql.md) records unified storage and
-native SQL ranking, preserving the hybrid pipeline from ADR 0004.
+storage, preserving the hybrid pipeline from ADR 0004.
+[ADR 0008](../adr/0008-use-chat-isolated-paradedb.md) replaces the lexical scorer
+with chat-isolated `pg_search` 0.26.4 indexes.
 [ADR 0003](../adr/0003-bind-chat-memory-access.md) governs source authority
 independently of ranking.
 
@@ -66,7 +68,9 @@ the two saved parents needed for those blocks. Parents outside the primary
 filters supply block context without becoming candidates. BM25 corpus statistics
 and index coverage counts describe the filtered primary blocks; canonical
 coverage still describes the full authorized selected chat scope through SQL
-aggregates. Queries without author/date filters consider all authorized messages.
+aggregates. Each chat's exact authorized primary block corpus gets a separate
+physical ParadeDB index with `k1=2.0`, `b=0.75`. Queries without author/date
+filters consider all authorized messages.
 Both retrieval inputs and returned
 sources remain inside the fixed access and cutoff. Primary author/date filters
 constrain supporting originals; separately labeled context can include other
@@ -77,9 +81,24 @@ ancestors and the two nearest messages on each side within three minutes of
 each hit, in its own chat/topic. Recall does not load all originals to reconstruct
 that context. The immutable engine snapshot can serve concurrent searches;
 cache construction/invalidation and shutdown retain their resource locks,
-without serializing database or embedding waits across searches. Cold lexical
-preparation inserts keys in a consistent order to avoid deadlocks between
-overlapping candidate sets. No approximate vector index or ranking cap is added.
+without serializing embedding waits across searches. Lexical preparation caches
+immutable native snapshots by chat, normalization/scorer version and all block
+content keys, including parent text. A changed parent, later edit, deletion or
+historical cutoff cannot reuse a stale block index. There are eight idle database
+snapshots and eight resident normalized snapshots; active database snapshots may
+temporarily exceed the limit. Transaction advisory locks protect each snapshot
+and nonblocking collection skips active queries. Failed/cancelled builds roll
+back their tables, indexes and journal. The runtime can create relations only in
+its derived schema; history-reader access to that schema is denied.
+
+Native indexes use whitespace tokenization over the existing Unicode61-normalized
+block text. Prefixes expand against the snapshot's uncapped resident vocabulary,
+then exact terms receive native BM25 scores.
+Owner-private lexical ranks from different chat indexes are merged with RRF,
+then combined with the dense ranking through the existing RRF and source
+diversity. First access to a new snapshot includes native index construction;
+unchanged blocks reuse resident normalized text. Warm native query measurements
+exclude that construction. No approximate vector index is added.
 
 After candidate filtering, lexical preparation/BM25 and vector coverage/query
 embedding/dense ranking run concurrently. Fusion waits for both ordered rankings.
@@ -386,15 +405,12 @@ under the existing content key, including model, dimensions and bounded payload.
 Native exact inner-product SQL ranks only allowed block keys, with stable ties.
 No ANN index is used: all authorized candidates participate before `LIMIT`.
 
-`lexical_documents` and `lexical_terms` store content-addressed block lengths
-and term frequencies. SQL computes BM25 prefix matching with corpus statistics
-over the filtered authorized primary snapshot. Unicode
-6.1 category/folding tables preserve the former FTS5 tokenization. RRF and source
-diversity operate on the bounded candidate rankings in Python; vectors are never
-loaded for a Python scan. Metadata/block construction runs off the event loop.
-Prefix branches carry explicit constant bounds for the short-term B-tree index;
-a separate partial index keeps oversized-token fallback scans small. Corpus
-statistics, frequencies and ranking remain scoped to the same authorized keys.
+`lexical_snapshots` records immutable ParadeDB tables in a separate derived
+schema selected by `lexical_cache_config`. Native BM25 statistics belong to each
+chat's authorized block corpus. Unicode 6.1 category/folding tables normalize
+block text before indexing. RRF and source diversity operate on bounded
+candidate rankings in Python; vectors are never loaded for a Python scan.
+Metadata/block construction and tokenization run off the event loop.
 
 `HybridChatMemory` coordinates internal modules with separate responsibilities:
 `_indexing.IndexingWorker` prepares current message/reply-block payloads using
@@ -404,8 +420,8 @@ history stays available independently of all three. Completed preparation
 invalidates engines for new searches while active leases finish on their snapshot.
 Completed batches persist across cancellation and restarts. Acknowledgement covers only the captured revision; newer edits remain
 pending. The worker checks pending work every two seconds and pauses after
-failures. Provider errors are redacted. Old content-addressed postings/vectors
-can remain cached but do not participate without authorized current block keys.
+failures. Provider errors are redacted. Cached vectors participate only through
+authorized current block keys; native snapshots follow the bounded cache policy.
 
 Administrative migrations initialize and upgrade the schema. Runtime startup
 verifies the migration journal and attempts preparation. A provider failure

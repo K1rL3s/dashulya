@@ -112,7 +112,7 @@ def test_readable_report_does_not_invent_token_usage_for_scripted_runs() -> None
         ],
         {
             "duration_ms": 100,
-            "counts": {"messages": 2, "embeddings": 2, "lexical_terms": 10},
+            "counts": {"messages": 2, "embeddings": 2},
         },
         mode="scripted_pipeline_with_synthetic_query_vectors",
     )
