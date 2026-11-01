@@ -2,6 +2,8 @@
 
 Superseded by [ADR 0004](0004-select-source-hybrid-memory.md) for the application
 backend. The pilot and native adapter below remain historical evidence.
+The adapter and its maintenance tools were retired by
+[ADR 0007](0007-retire-legacy-storage.md).
 
 Accepted on October 25, 2026. Use OpenViking as the sole agent memory backend,
 accessed through its official Python SDK and run locally in Docker Compose.

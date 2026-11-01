@@ -1,22 +1,17 @@
 import base64
-import hashlib
-import sqlite3
-from contextlib import AsyncExitStack, closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+from psycopg.types.json import Jsonb
 
 from dashulya.database import Database
-from dashulya.domain.memory import MemoryAccess, MemoryMessage
+from dashulya.domain.memory import MemoryAccess, MemoryMessage, OriginalMessage
 from dashulya.memory.history import CanonicalHistory
-from dashulya.memory.search import MemorySearch
 from dashulya.memory.store import MessageStore
-from tests.postgres import imported_history
+from tests.postgres import seed_history
 
 NOW = datetime(2026, 10, 25, 12, tzinfo=UTC)
 GROUP = -100123
@@ -26,12 +21,8 @@ OTHER = -100456
 @pytest.mark.usefixtures("_setup")
 class TestCanonicalHistory:
     @pytest.fixture
-    async def _setup(self, database: Database, cleanup: AsyncExitStack) -> None:
+    async def _setup(self, database: Database) -> None:
         self.database = database
-        self.cleanup = cleanup
-        self.directory = TemporaryDirectory()
-        self.cleanup.callback(self.directory.cleanup)
-        self.path = Path(self.directory.name)
         self.live = MessageStore(self.database)
         await self.live.initialize()
         self.group = CanonicalHistory(self.live, MemoryAccess(GROUP, is_private=False))
@@ -54,43 +45,28 @@ class TestCanonicalHistory:
             **changes,
         )
 
-    def imported(self, *, dated: bool = True) -> MemorySearch:
-        path = self.path / "import.sqlite3"
-        with closing(sqlite3.connect(path)) as connection:
-            connection.executescript("""
-                CREATE TABLE messages (
-                    id INTEGER PRIMARY KEY, sent_at TEXT, user_id INTEGER, author TEXT,
-                    body TEXT, reply_to_id INTEGER, conversation TEXT, url TEXT
-                );
-                CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                INSERT INTO metadata VALUES ('version','1');
-                INSERT INTO metadata VALUES ('source_sha256','"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"');
-                INSERT INTO metadata VALUES ('chat_username','"public_group"');
-                CREATE TABLE memories (id INTEGER PRIMARY KEY, key TEXT, kind TEXT, body TEXT);
-                CREATE TABLE sources (memory_id INTEGER, message_id INTEGER);
-                CREATE TABLE private_knowledge (body TEXT);
-                INSERT INTO private_knowledge VALUES ('SECRET_DERIVED_MEMORY');
-            """)
-            connection.executemany(
-                "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        mid,
-                        NOW.isoformat() if dated else None,
-                        10,
-                        "Archive Alex",
-                        f"Archive original {mid}",
-                        None,
-                        "post:999",
-                        f"https://t.me/public_group/{mid}",
-                    )
-                    for mid in (1, 2)
-                ],
+    @staticmethod
+    def imported(*, dated: bool = True) -> tuple[OriginalMessage, ...]:
+        return tuple(
+            OriginalMessage(
+                collection=f"archive:{'a' * 64}",
+                chat_id=None,
+                message_id=mid,
+                text=f"Archive original {mid}",
+                sent_at=NOW if dated else None,
+                author_id=10,
+                author="Archive Alex",
+                chat_title="public_group",
+                chat_username="public_group",
+                topic_id=None,
+                reply_to_id=None,
+                edited_at=None,
+                media_type=None,
+                url=f"https://t.me/public_group/{mid}",
+                provenance="imported",
+                archive_key="a" * 64,
             )
-            connection.commit()
-        return MemorySearch(
-            path,
-            {"version": 1, "source_sha256": "a" * 64, "chat_username": "public_group"},
+            for mid in (1, 2)
         )
 
     async def test_group_isolation_private_federation_and_composite_identity(
@@ -178,9 +154,7 @@ class TestCanonicalHistory:
         assert [m["message_id"] for m in result["messages"]] == [2]
         assert result["messages"][0]["sent_at"] == NOW.isoformat()
         imported = self.imported(dated=False)
-        reader = await imported_history(
-            self.live, MemoryAccess(42, True), imported=imported
-        )
+        reader = await seed_history(self.live, MemoryAccess(42, True), imported=imported)
         assert (await reader.query("count"))["count"] == 5
         assert (await reader.query("count", after=NOW.isoformat()))["count"] == 2
         with pytest.raises(ValueError, match="timezone"):
@@ -260,7 +234,7 @@ class TestCanonicalHistory:
         self,
     ) -> None:
         imported = self.imported()
-        reader = await imported_history(
+        reader = await seed_history(
             self.live, MemoryAccess(GROUP, False), imported=imported, import_chat_id=GROUP
         )
         original = (
@@ -288,24 +262,18 @@ class TestCanonicalHistory:
         assert (await reader.query("count", text_contains="Archive original 1"))[
             "count"
         ] == 0
-        assert (await reader.query("count", text_contains="SECRET_DERIVED_MEMORY"))[
-            "count"
-        ] == 0
         assert len(await self.live.pending()) > 0
 
-    async def test_unknown_numeric_archive_is_private_only_and_binding_is_explicit(
+    async def test_unbound_archive_is_private_only_with_composite_identity(
         self,
     ) -> None:
         imported = self.imported()
-        checksum = hashlib.sha256(imported.path.read_bytes()).hexdigest()
         await self.live.record(self.message(1, text="Live same ID"))
-        group = await imported_history(
+        group = await seed_history(
             self.live, MemoryAccess(GROUP, False), imported=imported
         )
         assert (await group.query("count"))["count"] == 1
-        private = await imported_history(
-            self.live, MemoryAccess(42, True), imported=imported
-        )
+        private = await seed_history(self.live, MemoryAccess(42, True), imported=imported)
         sources = (await private.query())["messages"]
         assert len(sources) == 3
         archive = [m for m in sources if m["provenance"] == "imported"]
@@ -313,11 +281,6 @@ class TestCanonicalHistory:
         assert all(m["chat"].startswith("archive:") for m in archive)
         assert all(m["topic_id"] is None for m in archive)
         assert len({m["source_id"] for m in sources}) == 3
-        bound = await imported_history(
-            self.live, MemoryAccess(GROUP, False), imported=imported, import_chat_id=GROUP
-        )
-        assert (await bound.query("count"))["count"] == 2
-        assert hashlib.sha256(imported.path.read_bytes()).hexdigest() == checksum
 
     async def test_read_context_may_cross_query_filters_but_never_fixed_cutoff_or_chat(
         self,
@@ -455,7 +418,7 @@ class TestCanonicalHistory:
                 1, text="Future corrected fact", edited_at=NOW + timedelta(seconds=2)
             )
         )
-        reader = await imported_history(
+        reader = await seed_history(
             self.live,
             MemoryAccess(GROUP, False, before=NOW + timedelta(seconds=1)),
             imported=imported,
@@ -495,9 +458,7 @@ class TestCanonicalHistory:
         imported = self.imported()
         await self.live.record(self.message(1, text="Live current group"))
         await self.live.record(self.message(1, chat_id=OTHER, text="Other chat"))
-        reader = await imported_history(
-            self.live, MemoryAccess(42, True), imported=imported
-        )
+        reader = await seed_history(self.live, MemoryAccess(42, True), imported=imported)
         archive = f"archive:{'a' * 64}"
         assert len(await reader.originals(chat=archive)) == 2
         selected = await reader.query(chat=archive)
@@ -513,17 +474,24 @@ class TestCanonicalHistory:
         self,
     ) -> None:
         imported = self.imported()
-        imported.coverage.update(
-            first_message_at="1900-01-01T00:00:00Z",
-            last_message_at="2999-01-01T00:00:00Z",
-        )
+        async with self.database.connection() as connection:
+            await connection.execute(
+                "INSERT INTO source_snapshots(source_key,metadata) VALUES (%s,%s)",
+                (
+                    "a" * 64,
+                    Jsonb({
+                        "first_message_at": "1900-01-01T00:00:00Z",
+                        "last_message_at": "2999-01-01T00:00:00Z",
+                    }),
+                ),
+            )
         await self.live.record(self.message(3, sent_at=NOW + timedelta(seconds=1)))
         await self.live.record(self.message(4, sent_at=NOW + timedelta(days=50)))
         await self.live.record(
             self.message(1, chat_id=OTHER, sent_at=NOW - timedelta(days=100))
         )
         access = MemoryAccess(GROUP, False, before=NOW + timedelta(seconds=2))
-        reader = await imported_history(
+        reader = await seed_history(
             self.live, access, imported=imported, import_chat_id=GROUP
         )
         coverage = (await reader.query("count"))["coverage"]

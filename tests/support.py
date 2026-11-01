@@ -22,6 +22,7 @@ from dashulya.domain.memory import (
     MessageRecorder,
     ReplyContext,
 )
+from evals.suites.memory.scoring import history_rows
 
 
 def reply_json(text: str, reply_to_message_id: int | None = None) -> str:
@@ -80,6 +81,7 @@ def memory_tool_data(event: ToolResultEvent) -> dict[str, Any]:
     assert part.content.startswith('<external_input source="memory">')
     data = json.loads(input_payload(part.content))
     assert isinstance(data, dict)
+    data = history_rows(data)
     return data["results"][0] if "results" in data and len(data["results"]) == 1 else data
 
 

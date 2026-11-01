@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from dashulya.ai.addressing import GroupAddressing
 from dashulya.ai.agents.factory import create_reply_agent
 from dashulya.ai.dialogue import Dialogue
-from dashulya.domain.memory import ChatHistory, MemoryMessage, ReplyContext
+from dashulya.domain.memory import ChatHistory, MemoryBackend, MemoryMessage, ReplyContext
 from dashulya.domain.messages import (
     GroupMessage,
     ImageAttachment,
@@ -26,7 +26,6 @@ from dashulya.domain.messages import (
 )
 from dashulya.main import create_container
 from dashulya.main.config import Settings
-from dashulya.memory.search import MemorySearch
 from dashulya.observability import JsonLogFormatter
 from tests.support import TEST_API_KEY, MemoryOverride, ModelOverrides, reply_json
 
@@ -315,7 +314,7 @@ class TestAgentAPI:
 
     async def test_reasoning_with_memory_uses_responses_and_executes_tool(self) -> None:
         requests: list[dict[str, Any]] = []
-        memory = Mock(spec=MemorySearch)
+        memory = Mock(spec=MemoryBackend)
         memory.search.return_value = {"hits": [], "coverage": {}}
 
         def respond(request: httpx2.Request) -> httpx2.Response:

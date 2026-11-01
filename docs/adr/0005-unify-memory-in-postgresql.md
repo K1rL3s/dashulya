@@ -1,5 +1,9 @@
 # Unify chat memory in PostgreSQL with pgvector
 
+The legacy adapters, migration CLI and SQLite reference tests described below
+were subsequently retired by [ADR 0007](0007-retire-legacy-storage.md).
+The Unicode 6.1 tokenization data remains part of the PostgreSQL implementation.
+
 Use one PostgreSQL database for imported and received originals, the group
 registry, durable indexing revisions, lexical postings and embeddings. Both
 memory tools and immediate reply context read the same canonical message rows.
@@ -38,9 +42,12 @@ to the agent. Stop the old writer for the final migration pass. Preserve its
 files and configuration; reverting after PostgreSQL receives new messages also
 requires transferring those new originals back to the old store.
 
-Compose runs PostgreSQL 16.12 with pgvector 0.8.1 at a pinned multi-platform image
+Compose runs PostgreSQL 16.15 with pgvector 0.8.7 at a pinned multi-platform image
 digest, persists its data on the host, and exposes it only to the internal
 network. CI tests use disposable schemas in an isolated pgvector server.
+The former 16.12 image had a Unicode substring regression on compressed originals;
+16.13 and later include the [upstream fix](https://www.postgresql.org/docs/release/16.13/). Existing extension SQL versions need
+not change for this PostgreSQL minor upgrade.
 
 References: [Psycopg async pools](https://www.psycopg.org/psycopg3/docs/advanced/pool.html),
 [pgvector exact search and filtering](https://github.com/pgvector/pgvector/blob/v0.8.1/README.md),

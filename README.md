@@ -337,16 +337,7 @@ The reader role is NOLOGIN and entered with SET LOCAL ROLE; it needs no password
 It can SELECT the scoped temporary history view and cannot read base tables.
 See [the SQL access decision](docs/adr/0006-scope-model-sql-with-postgresql-views.md).
 
-### 2. Import optional existing data
-
-Skip this step for a new deployment. To migrate an existing SQLite deployment,
-stop its agent, preserve the old files, and follow the [migration procedure](docs/design/chat-memory.md#sqlite-migration).
-It copies imported and received originals, the group registry, cached embeddings
-and legacy knowledge into PostgreSQL, verifies canonical messages and never
-requests new embeddings. An archive needs a verified numeric Telegram chat ID
-before it can be exposed to that group; an unbound archive remains private-only.
-
-### 3. Start the agent
+### 2. Start the agent
 
 ```sh
 docker compose up -d --build --wait
@@ -374,9 +365,10 @@ The [Compose file](docker-compose.yaml) persists originals, the registry, lexica
 postings and embeddings in `var/postgres/`, and logs in `var/logs/`. PostgreSQL
 has no published host port. These directories survive container recreation and
 are excluded from Git. Back up the running database with `pg_dump`; copy its data
-directory only while PostgreSQL is stopped. Preserve pre-migration SQLite files
-for rollback. The runtime uses PostgreSQL exclusively; legacy SQLite/OpenViking
-maintenance commands remain available offline.
+directory only while PostgreSQL is stopped. Runtime, maintenance and storage
+tests use PostgreSQL; legacy storage adapters and migration commands have been
+retired. Existing originals, cached embeddings and preserved source snapshots
+remain intact.
 
 Compose bind-mounts `./src` read-only at `/app/src`. `PYTHONPATH` makes these host
 sources take precedence over the installed package in the image. After editing
@@ -413,8 +405,7 @@ suite fails immediately if this variable is missing. Never point it at
 application data.
 
 Run `just test-local` for the PostgreSQL-independent tests under `tests/local/`.
-These include focused model, delivery and formatting checks, plus legacy
-SQLite/OpenViking checks with local fixtures and mocked SDK requests.
+These include focused model, delivery, formatting and tokenizer checks.
 `tests/integration/` exercises real PostgreSQL storage and dispatcher scenarios,
 including group access, activation and delivered-message capture. Both sets run
 with `just test`; each test belongs to one set.

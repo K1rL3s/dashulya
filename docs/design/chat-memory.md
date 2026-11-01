@@ -117,6 +117,10 @@ twelve-second per-query deadline and a shared thirty-second batch query budget,
 bounded work memory and a server-side cursor bound execution and result reading. Return at most 50 rows, 32 uniquely named columns,
 12000 characters per cell and 48000 characters across all result rows in a batch.
 Results expose columns, rows, returned row_count and truncated; row_count is not the total match count.
+The model receives positional row arrays under one column header per query,
+preserving exact cell values and query/error positions without repeating field
+names for every original. Independent reads belong in one batch; overview queries
+select excerpts before focused full-text/thread reads.
 Coverage explicitly remains incomplete. Missing saved ancestors prevent claims
 of complete live threads.
 
@@ -376,6 +380,9 @@ over the filtered authorized primary snapshot. Unicode
 6.1 category/folding tables preserve the former FTS5 tokenization. RRF and source
 diversity operate on the bounded candidate rankings in Python; vectors are never
 loaded for a Python scan. Metadata/block construction runs off the event loop.
+Prefix branches carry explicit constant bounds for the short-term B-tree index;
+a separate partial index keeps oversized-token fallback scans small. Corpus
+statistics, frequencies and ranking remain scoped to the same authorized keys.
 
 `HybridChatMemory` coordinates internal modules with separate responsibilities:
 `_indexing.IndexingWorker` prepares current message/reply-block payloads using
@@ -398,44 +405,17 @@ port. `POSTGRES_PASSWORD` configures its internal credentials. Original history,
 reply context and search all use that database. In-memory private conversation
 streams remain separate and ephemeral.
 
-## SQLite migration
+## Backups and evaluation data
 
-Preserve source files and stop the old agent for the final pass so no updates
-arrive between the snapshot and cutover. Use consistent SQLite backups when
-copying an active journal. Build the new image and start PostgreSQL first:
-
-```sh
-docker compose build agent
-docker compose up -d --wait postgres
-docker compose run --rm --no-deps \
-  -v "$(pwd)/var/agent:/legacy:ro" agent \
-  python -m dashulya.memory migrate \
-  --evidence /legacy/evidence.sqlite3 --live /legacy/memory.sqlite3 \
-  --groups /legacy/dashulya.sqlite3 --vectors /legacy/vectors.sqlite3 \
-  --chat-id VERIFIED_NUMERIC_CHAT_ID --owner-user-id OWNER_NUMERIC_USER_ID
-```
-
-Each source flag is optional; omit unavailable inputs. Omit `--chat-id` to keep
-an archive private-only. Binding an already bound archive to a different chat
-is rejected. Binding a previously unbound archive adopts its existing records.
-The command opens SQLite read-only and never calls an embedding provider.
-It copies all available original metadata, preserves legacy fact/summary bodies
-and source IDs in `legacy_records`, and verifies each resulting canonical message
-against the source. Repeating the command is idempotent; newer live versions
-win. A source digest and counts are returned without message bodies or secrets.
-
-After verification, start the agent with `docker compose up -d --wait agent`.
-Its normal worker reuses cached embeddings and prepares only missing/current
-payloads. Preserve SQLite files and the old configuration until the deployment
-is accepted. A rollback after new PostgreSQL writes needs those new originals
-transferred as well; switching containers alone would lose their visibility.
 Use `pg_dump` for live PostgreSQL backups, or stop PostgreSQL before copying its
-data directory.
+data directory. The normal worker reuses cached embeddings and prepares only
+missing/current payloads.
 
 Immutable source snapshots stay under ignored `evals/datasets/`; isolated
-indices/results stay under `evals/runs/`. Offline SQLite/OpenViking maintenance
-commands remain available through `python -m dashulya.memory`. Neither legacy
-engine is in the application's runtime dependency graph.
+PostgreSQL schemas and generated results belong to evaluation runs under
+`evals/runs/`. Legacy storage adapters and migration/export commands have been
+retired under [ADR 0007](../adr/0007-retire-legacy-storage.md). Existing source
+files, backups and persisted originals remain intact.
 
 ## Limits
 

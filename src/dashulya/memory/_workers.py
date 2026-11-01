@@ -1,4 +1,4 @@
-"""Cancellation-safe completion of bounded CPU and SQLite worker operations.
+"""Cancellation-safe completion of bounded CPU worker operations.
 
 These operations cannot be interrupted once their thread starts. Keep their
 caller's resource lease until completion. Provider/network awaits belong on the

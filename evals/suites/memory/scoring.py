@@ -68,7 +68,7 @@ def tool_results(trace: Trace) -> Iterator[tuple[ToolResultEvent, dict[str, Any]
             continue
         for part in event.result.parts:
             if isinstance(part, DataInput) and isinstance(part.data, dict):
-                yield event, part.data
+                yield event, history_rows(part.data)
             elif isinstance(part, TextInput):
                 content = part.content
                 opening = '<external_input source="memory">\n'
@@ -80,7 +80,30 @@ def tool_results(trace: Trace) -> Iterator[tuple[ToolResultEvent, dict[str, Any]
                 except (ValueError, TypeError):
                     continue
                 if isinstance(value, dict):
-                    yield event, value
+                    yield event, history_rows(value)
+
+
+def history_rows(value: dict[str, Any]) -> dict[str, Any]:
+    """Expand the model's columnar SQL tables for evidence scoring."""
+    if "results" not in value:
+        return value
+    return {
+        **value,
+        "results": [
+            {
+                **item,
+                "rows": [
+                    dict(zip(item["columns"], row, strict=True))
+                    if isinstance(row, list)
+                    else row
+                    for row in item["rows"]
+                ],
+            }
+            if "columns" in item
+            else item
+            for item in value["results"]
+        ],
+    }
 
 
 def source_ids(value: Any) -> set[int]:

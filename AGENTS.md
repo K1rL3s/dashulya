@@ -47,7 +47,7 @@ With `just` installed, enable them with `uv run pre-commit install`.
 | `src/dashulya/bot/` | aiogram routing, command/dialogue handlers, and middleware |
 | `src/dashulya/ai/` | Agent factories and model policy, tools, prompts, dialogue, and addressing |
 | `src/dashulya/domain/` | Domain models, group lifecycle rules, and persistence/search interfaces |
-| `src/dashulya/memory/` | Local indexing, unified search, evidence reconstruction, and offline commands |
+| `src/dashulya/memory/` | Indexing, unified search, and evidence reconstruction over PostgreSQL |
 | `src/dashulya/storage/` | Known-group persistence |
 | `src/dashulya/database.py` | Shared PostgreSQL pool and schema initialization |
 
@@ -127,8 +127,7 @@ of embeddings. Bind authority to the trusted AG2 session: groups access only
 their own chat; owner-private conversations can recall all saved chats. Model
 filters only narrow access. Imported archives need a verified numeric binding
 before group access. Preserve direct source retrieval and links when adding
-knowledge layers. Before changing the legacy OpenViking adapter or export, read
-[the original memory ADR](docs/adr/0001-openviking-memory.md).
+knowledge layers.
 
 Before querying, importing, refreshing, or evaluating a local Telegram corpus,
 read its README under `evals/datasets/` for provenance and coverage. Entire
@@ -146,11 +145,11 @@ decisions and their rationale in `docs/adr/`.
 
 `DATABASE_URL` selects the single PostgreSQL database for originals, the registry,
 lexical postings, embeddings and the revision queue. Read [the storage ADR](docs/adr/0005-unify-memory-in-postgresql.md)
-before changing SQL ranking or migrating legacy files. Compose persists the
+before changing SQL ranking or bulk-loading originals. Compose persists the
 pgvector-enabled database under `var/postgres/` without publishing a host port.
-SQLite is an explicit read-only migration/maintenance input, never a runtime
-source. Reuse cached embeddings during migration; verify originals before
-switching the agent and preserve source files for rollback.
+Runtime, maintenance and storage tests use PostgreSQL. Legacy storage adapters
+and their reference tests were retired by [ADR 0007](docs/adr/0007-retire-legacy-storage.md).
+Preserve source snapshots and existing originals when changing infrastructure.
 Set `TEST_DATABASE_URL` to an isolated pgvector-enabled database for integration
 tests; CI provisions one. Test schemas are disposable and must stay outside
 application data.

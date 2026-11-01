@@ -142,3 +142,66 @@ responses, independently of private datasets, PostgreSQL and model services:
 ```sh
 just test-local
 ```
+
+## Diagnose a history-summary conversation
+
+`python -m evals.suites.memory.scenario` replays JSONL scenarios through the
+production `Dialogue`, reply-agent factory, memory tools, formatter and PostgreSQL.
+Each row supplies `case_id`, `session`, `query`, `chat_id`, `user_id`,
+`target_chat_id`, timezone-aware `sent_at`, `after` and exclusive `before`.
+Optional `author_id` describes the expected recall filter. Rows sharing a session
+retain private agent context; distinct sessions start fresh. Group requests use
+the normal latest-20-plus-ancestors context. Requests and simulated deliveries
+are recorded only in the disposable evaluation schema.
+
+Use `EVAL_SOURCE_DATABASE_URL` for the source, or the application's `DATABASE_URL`.
+The source is opened read-only at repeatable read. Canonical rows after the first
+request cutoff and rows edited at/after it are excluded. Existing lexical and
+vector caches are copied unchanged, including unused entries; authorization and
+current content keys still determine candidates. Preparation does not re-embed
+history. `EVAL_DATABASE_URL` must be a separate disposable database. This copies
+potentially large caches; preparation time is reported separately.
+
+Start with a fully local pipeline probe:
+
+```sh
+uv run --locked python -m evals.suites.memory.scenario --scripted \
+  --cases evals/datasets/YOUR_DATASET/cases.jsonl \
+  --out evals/runs/history-pipeline
+```
+
+`--scripted` uses predetermined calls and synthetic query vectors. It creates no
+OpenAI client and makes no model, embedding, Telegram or web API calls. Its timing
+measures local integration, SQL and context assembly; it does not measure model
+latency, token usage, retrieval relevance or answer quality. It can still expose
+context accumulation and scope/filter regressions. Unknown token usage remains
+unscored instead of being fabricated as zero.
+
+For a separately authorized live run, omit `--scripted` and supply `--model` (or
+`OPENAI_MODEL`) and `OPENAI_API_KEY`. This sends prompts, questions and retrieved
+original fragments to the configured OpenAI model, and new query text to the
+embedding API. Owner-private scope can retrieve every saved chat, including the
+owner's private records. System/tool prompts and retrieved text are recorded in
+ignored run artifacts. Do not publish those artifacts. There is no semantic judge
+or human gold in this diagnostic mode; citation identity is not entailment.
+
+`report.md` summarizes timings, context growth, checks and per-search stages.
+Each case JSON stores every native AG2 model input, system prompt, tool schema,
+call arguments/results, token usage when available, SQL/search logs correlated
+to tool-call IDs and embedding timings. Saved JSON redacts configured credentials.
+`summary.json` holds objective checks; `snapshot.json` records preparation counts
+and timing, including ANALYZE after bulk loading for representative query plans.
+SQL columnar tables are expanded only for scoring; model contexts retain the
+exact compact output. Seen-source counts include explicit canonical IDs or
+original URLs, and do not infer identity from unqualified numeric IDs.
+Case files are saved as each case finishes. Development limits are
+12 model calls, 24 tool calls, 50000 input tokens per model call and Dialogue's
+90-second generation deadline; limits are diagnostics, not release SLAs.
+
+The trace checks cover execution, tool errors, SQL batch shape, hidden chat
+authority, bounded author/date recall, retrieved-source scope, known/exposed
+citations and context-token budgets. They do not establish historical completeness
+or factual/semantic correctness. Telegram routing, delivery, reactions, web tools
+and image downloads are outside this text replay; integration tests cover those
+boundaries separately. Tests for this runner use synthetic data and scripted AG2
+responses against an isolated PostgreSQL, without private datasets or model APIs.

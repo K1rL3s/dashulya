@@ -117,7 +117,11 @@ class TestHistoryImages:
                 ]
             else:
                 rows = []
-            return {"rows": rows, "coverage": {"complete": False}}
+            return {
+                "columns": list(rows[0]) if rows else [],
+                "rows": rows,
+                "coverage": {"complete": False},
+            }
 
         reader.sql.side_effect = query
         container = create_container(

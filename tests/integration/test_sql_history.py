@@ -64,6 +64,50 @@ async def test_queries_execute_as_restricted_role(reader: SqlHistory) -> None:
     ]
 
 
+async def test_excerpt_of_compressed_unicode_original(
+    database: Database, reader: SqlHistory
+) -> None:
+    # PostgreSQL 16.12 misvalidated partial TOAST slices at UTF-8 boundaries.
+    await MessageStore(database).record(
+        MemoryMessage(GROUP, 5, "日向" * 2000, NOW, 42, "Author", "Group")
+    )
+    result = (
+        await reader.query([
+            (
+                "SELECT left(text,1) AS first, substring(text from 2 for 1) AS second "
+                "FROM messages WHERE message_id=5"
+            )
+        ])
+    )["results"][0]
+    assert result["outcome"] == "ok"
+    assert result["rows"] == [{"first": "日", "second": "向"}]
+
+
+async def test_grouping_failure_explains_the_repair_and_preserves_batch(
+    reader: SqlHistory,
+) -> None:
+    result = await reader.query([
+        (
+            "SELECT m.message_id,m.author,count(r.message_id) AS replies FROM messages m "
+            "LEFT JOIN messages r ON r.chat=m.chat AND r.reply_to_message_id=m.message_id "
+            "GROUP BY m.chat,m.message_id"
+        ),
+        (
+            "WITH replies AS (SELECT chat,reply_to_message_id,count(*) AS n FROM messages "
+            "GROUP BY chat,reply_to_message_id) SELECT m.message_id,m.author,coalesce(r.n,0) AS replies "
+            "FROM messages m LEFT JOIN replies r ON r.chat=m.chat AND r.reply_to_message_id=m.message_id "
+            "WHERE m.reply_to_message_id IS NULL ORDER BY m.message_id"
+        ),
+    ])
+    assert result["results"][0]["outcome"] == "error"
+    assert "GROUP BY" in result["results"][0]["error"]
+    assert "CTE" in result["results"][0]["error"]
+    assert result["results"][1]["rows"] == [
+        {"message_id": 1, "author": "Participant", "replies": 2},
+        {"message_id": 4, "author": "Participant", "replies": 0},
+    ]
+
+
 async def test_scope_applies_before_ctes_unions_and_aggregates(
     reader: SqlHistory,
 ) -> None:

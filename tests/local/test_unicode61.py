@@ -1,31 +1,26 @@
-import random
-import sqlite3
-from contextlib import closing
+# ruff: file-ignore[ambiguous-unicode-character-string] -- Token fixtures intentionally cover multiple alphabets.
+
+import pytest
 
 from dashulya.memory._unicode61 import tokens
 
 
-class TestUnicode61:
-    def test_unicode61_categories_folding_and_combining_marks_match_reference(
-        self,
-    ) -> None:
-        # Sample the Unicode range independently of the generated lookup tables.
-        rng = random.Random(61)
-        text = " ".join(
-            chr(code)
-            for code in [*range(1, 2048), *(rng.randrange(0x110000) for _ in range(4000))]
-            if not 0xD800 <= code <= 0xDFFF
-        )
-        with closing(sqlite3.connect(":memory:")) as reference:
-            reference.execute(
-                "CREATE VIRTUAL TABLE docs USING fts5(body,tokenize='unicode61 remove_diacritics 2')"
-            )
-            reference.execute(
-                "CREATE VIRTUAL TABLE terms USING fts5vocab(docs,'instance')"
-            )
-            reference.execute("INSERT INTO docs(body) VALUES (?)", (text,))
-            expected = [
-                row[0]
-                for row in reference.execute("SELECT term FROM terms ORDER BY offset")
-            ]
-        assert tokens(text) == expected
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("naïve CAFÉ cafe\u0301", ["naive", "cafe", "cafe"]),
+        ("Straße STRASSE", ["straße", "strasse"]),
+        ("snake_case JSON42 BB?", ["snake", "case", "json42", "bb"]),
+        ("привет\u0301 ΙΣΟΣ ὈΔΥΣΣΕΎΣ", ["привет", "ισοσ", "ὀδυσσεύσ"]),
+        ("İSTANBUL Æther Øresund Łódź", ["istanbul", "æther", "øresund", "łodz"]),
+        ("\u0301start a\u036fb", ["start", "a", "b"]),
+        ("a\u0378b", ["a\u0378b"]),
+        ("project🤯 tools🤷 👩\u200d💻", ["project🤯", "tools🤷"]),
+        ("edge\ud7ff edge\ue000 \U0010ffff", ["edge\ud7ff", "edge\ue000", "\U0010ffff"]),
+        (" \n!?", []),
+    ],
+)
+def test_unicode61_token_contract(text: str, expected: list[str]) -> None:
+    # Preserve the selected Unicode 6.1 categories and folds independently of
+    # newer Python Unicode tables, especially unassigned characters and marks.
+    assert tokens(text) == expected

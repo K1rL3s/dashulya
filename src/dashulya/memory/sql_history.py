@@ -548,6 +548,7 @@ def _failure_reason(error: Exception) -> str:
     return {
         "42601": "Invalid PostgreSQL query syntax.",
         "42703": "Unknown column; use the messages schema in the tool description.",
+        "42803": "GROUP BY must include every selected nonaggregate column or expression; IDs do not imply other columns. Alternatively aggregate replies in a CTE, then join messages.",
         "42P01": "Unknown relation; read messages and query-local CTEs only.",
         "42501": "The history role cannot access that relation or function.",
         "42883": "Unknown function or incompatible argument types.",

@@ -43,6 +43,24 @@ class HistoryImageTurn:
             return loaded
 
 
+def _table_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep exact cell values while sending each column name only once."""
+    return {
+        **result,
+        "results": [
+            {
+                **item,
+                "rows": [
+                    [row[column] for column in item["columns"]] for row in item["rows"]
+                ],
+            }
+            if "columns" in item
+            else item
+            for item in result["results"]
+        ],
+    }
+
+
 async def _load_image(
     item: dict[str, Any],
     history: HistoryReader,
@@ -131,11 +149,20 @@ async def chat_history(
     ```
     Key: (chat, message_id). Join replies within that chat and use
     IS NOT DISTINCT FROM for nullable topic IDs. Timestamp literals need an offset.
+    Group local days with (sent_at AT TIME ZONE 'Europe/Moscow')::date;
+    substitute the requested timezone or the system timezone.
     CTEs, recursive CTEs and self-joins are supported.
+    GROUP BY must include every selected nonaggregate column or expression;
+    IDs do not imply other columns. For reply counts, aggregate replies in a CTE
+    by chat, topic_id and reply_to_message_id, then join the originals.
 
-    Use ORDER BY and LIMIT (up to 50 rows, 32 uniquely named columns per query).
+    Batch independent reads in one call. Select only needed columns; use short
+    text excerpts for discovery and full text for the chosen originals.
+    Use ORDER BY and LIMIT (up to 50 rows, 32 uniquely named columns per query;
+    48,000 result characters shared across the batch, 12,000 per cell).
     Results follow input order: query_index is 1-based; outcome=ok supplies
-    columns, rows, row_count and truncated; outcome=error supplies error.
+    columns and positional row arrays, row_count and truncated; outcome=error
+    supplies error.
     Correct and retry failed queries individually. row_count counts returned rows;
     use COUNT(*) for totals. When truncated, page with ID bounds or OFFSET;
     continue long text with substring(text from 12001 for 12000).
@@ -145,20 +172,20 @@ async def chat_history(
 
     Examples (replace sample IDs with observed IDs):
     - Case 1: Read messages between two IDs, including both endpoints.
-      {"sql": ["SELECT * FROM messages WHERE message_id BETWEEN 20000 AND 20100 ORDER BY message_id LIMIT 50"]}
+      {"sql": ["SELECT message_id,author,text,url FROM messages WHERE message_id BETWEEN 20000 AND 20100 ORDER BY message_id LIMIT 50"]}
     - Case 2: Read the thread containing a message, including saved sibling branches.
-      {"sql": ["WITH RECURSIVE thread AS (SELECT * FROM messages WHERE message_id = 20998 UNION SELECT m.* FROM messages m JOIN thread t ON m.chat = t.chat AND m.topic_id IS NOT DISTINCT FROM t.topic_id AND ((m.message_id = t.reply_to_message_id AND m.message_id < t.message_id) OR (m.reply_to_message_id = t.message_id AND m.message_id > t.message_id))) SELECT * FROM thread ORDER BY message_id LIMIT 50"]}
+      {"sql": ["WITH RECURSIVE thread AS (SELECT * FROM messages WHERE message_id = 20998 UNION SELECT m.* FROM messages m JOIN thread t ON m.chat = t.chat AND m.topic_id IS NOT DISTINCT FROM t.topic_id AND ((m.message_id = t.reply_to_message_id AND m.message_id < t.message_id) OR (m.reply_to_message_id = t.message_id AND m.message_id > t.message_id))) SELECT message_id,reply_to_message_id,author,text,url FROM thread ORDER BY message_id LIMIT 50"]}
     - Case 3: Count messages containing a phrase in a fixed period.
       {"sql": ["SELECT count(*) AS matches FROM messages WHERE text ILIKE '%deployment%' AND sent_at >= TIMESTAMPTZ '2026-10-01 00:00:00+03' AND sent_at < TIMESTAMPTZ '2026-11-01 00:00:00+03'"]}
     - Case 4: Batch a participant's messages and an independent exact count.
-      {"sql": ["SELECT * FROM messages WHERE author_id = 42 AND text ILIKE '%deployment%' ORDER BY message_id DESC LIMIT 20", "SELECT count(*) AS matches FROM messages WHERE author_id = 42 AND text ILIKE '%deployment%'"]}
+      {"sql": ["SELECT message_id,sent_at,author,text,url FROM messages WHERE author_id = 42 AND text ILIKE '%deployment%' ORDER BY message_id DESC LIMIT 20", "SELECT count(*) AS matches FROM messages WHERE author_id = 42 AND text ILIKE '%deployment%'"]}
     """
     result = await history.sql(sql)
     attachments = []
     for item in result["results"]:
         attachments.extend(await _load_image(item, history, image_turn))
     text = external_input(
-        json.dumps(result, ensure_ascii=False),
+        json.dumps(_table_result(result), ensure_ascii=False, separators=(",", ":")),
         "memory",
     )
     return ToolResult(text, *attachments)

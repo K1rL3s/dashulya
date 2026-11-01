@@ -70,7 +70,7 @@ class TestSettings:
             settings = load_settings()
             assert settings.database_url == env["DATABASE_URL"]
             assert "test-only" not in repr(settings)
-            for invalid in ("", "sqlite:///old.db", "not-a-url", "postgresql://host"):
+            for invalid in ("", "mysql://host/old", "not-a-url", "postgresql://host"):
                 os.environ["DATABASE_URL"] = invalid
                 with pytest.raises(ValueError, match="DATABASE_URL"):
                     load_settings()

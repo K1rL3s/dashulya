@@ -48,8 +48,8 @@ The domain provider aliases the registry implementation to its interface.
 
 `MessageStore` implements `MessageRecorder` and `ChatHistory`. Imported and
 received originals share its canonical table, read by immediate reply context,
-`chat_history` and `search_memory`. Offline migration is explicit; runtime startup
-never opens a SQLite archive. [ADR 0005](../adr/0005-unify-memory-in-postgresql.md)
+`chat_history` and `search_memory`. All storage operations use PostgreSQL.
+[ADR 0005](../adr/0005-unify-memory-in-postgresql.md)
 records the storage decision. `ChatMemoryService` binds trusted `MemoryAccess`
 to separate recall and canonical readers for each AG2 session.
 

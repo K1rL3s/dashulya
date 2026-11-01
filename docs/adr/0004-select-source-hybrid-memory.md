@@ -2,6 +2,7 @@
 
 Storage and execution details are superseded by [ADR 0005](0005-unify-memory-in-postgresql.md).
 The hybrid ranking and source-evidence decision remains in effect.
+Legacy adapter maintenance was retired by [ADR 0007](0007-retire-legacy-storage.md).
 
 Use BM25 and dense embeddings of original messages with up to two reply parents,
 combine rankings with reciprocal rank fusion, and return source-diverse evidence.

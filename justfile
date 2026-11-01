@@ -58,7 +58,7 @@ import-linter:
 lock-check:
     uv lock --check
 
-# Run local tests, including legacy SQLite, without PostgreSQL or remote requests.
+# Run model, formatting and other storage-independent tests without remote requests.
 test-local:
     uv run --locked --no-dev --group test python -m pytest tests/local
 

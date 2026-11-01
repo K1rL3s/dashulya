@@ -183,15 +183,6 @@ wheels = [
 ]
 
 [[package]]
-name = "aiosqlite"
-version = "0.22.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4e/8a/64761f4005f17809769d23e518d915db74e6310474e733e3593cfc854ef1/aiosqlite-0.22.1.tar.gz", hash = "sha256:043e0bd78d32888c0a9ca90fc788b38796843360c855a7262a532813133a0650", size = 14821, upload-time = "2025-12-23T19:25:43.997Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/00/b7/e3bf5133d697a08128598c8d0abc5e16377b51465a33756de24fa7dee953/aiosqlite-0.22.1-py3-none-any.whl", hash = "sha256:21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb", size = 17405, upload-time = "2025-12-23T19:25:42.139Z" },
-]
-
-[[package]]
 name = "annotated-types"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -665,7 +656,6 @@ source = { editable = "." }
 dependencies = [
     { name = "ag2", extra = ["mcp", "openai"] },
     { name = "aiogram" },
-    { name = "aiosqlite" },
     { name = "av" },
     { name = "cachetools" },
     { name = "dishka" },
@@ -673,7 +663,6 @@ dependencies = [
     { name = "fast-depends" },
     { name = "httpx2" },
     { name = "mistune" },
-    { name = "openviking-sdk" },
     { name = "pglast" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "python-dotenv" },
@@ -726,7 +715,6 @@ test = [
 requires-dist = [
     { name = "ag2", extras = ["openai", "mcp"], specifier = ">=1.2.1,<2" },
     { name = "aiogram", specifier = ">=3.31,<4" },
-    { name = "aiosqlite", specifier = ">=0.21,<1" },
     { name = "av", specifier = ">=16,<18" },
     { name = "cachetools", specifier = ">=7,<8" },
     { name = "dishka", specifier = ">=1.7,<2" },
@@ -734,7 +722,6 @@ requires-dist = [
     { name = "fast-depends", specifier = ">=3.0.9,<4" },
     { name = "httpx2", specifier = ">=2.16,<3" },
     { name = "mistune", specifier = ">=3.0,<4" },
-    { name = "openviking-sdk", specifier = "==0.1.16" },
     { name = "pglast", specifier = ">=8.7,<9" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2,<4" },
     { name = "python-dotenv", specifier = ">=1.1,<2" },
@@ -1725,18 +1712,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/19/14/cf3a6b6448849656e1e5f4e2101f3988dc6789724050096aba1bc5ccf592/opentelemetry_api-1.45.2.tar.gz", hash = "sha256:d7b0008e21e5fd61cbe7a7f34ca3b6905a78ab677d9bc395e299359c75cda6b4", size = 73277, upload-time = "2026-10-29T17:29:37.888Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a9/2d/610db864d7513158cebb8f36cc88e67e73bd6c7aa1905ef18d89e1281c81/opentelemetry_api-1.45.2-py3-none-any.whl", hash = "sha256:2cbd737377e710ee740d261c94e93fa0f08e6d037c18f17513cc0a2d94479a34", size = 60335, upload-time = "2026-10-29T17:29:06.955Z" },
-]
-
-[[package]]
-name = "openviking-sdk"
-version = "0.1.16"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "httpx" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/e8/f4/482d09818f667bba1a9f737ce8341e15d5c363d490781ab7803821fdc9a1/openviking_sdk-0.1.16.tar.gz", hash = "sha256:222c10ccc7c8758a1fb894eb7a682315c6e0cfc9b6b9a881693a1a9c72a29591", size = 57427, upload-time = "2026-10-19T13:43:14.234Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/00/ea/b24e1375d66ec33eded1f55763265687b84d73c37204a9c9ace983b1ceec/openviking_sdk-0.1.16-py3-none-any.whl", hash = "sha256:1c71199a7a0377efa47c73d181bf44ccdc18952a8afbbc99ef662a34387cbf08", size = 34566, upload-time = "2026-10-19T13:43:13.069Z" },
 ]
 
 [[package]]

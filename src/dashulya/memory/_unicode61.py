@@ -1,4 +1,4 @@
-"""SQLite Unicode 6.1 token categories and folding without a runtime SQLite store.
+"""Unicode 6.1 token categories and folding for PostgreSQL lexical postings.
 
 unicode61.json contains separator boundaries and non-identity folds generated from
 SQLite's public-domain ext/fts5/fts5_unicode2.c, version-3.46.1. Category zero

@@ -6,17 +6,16 @@ Keep project design, evaluation infrastructure and application state separate.
 | --- | --- | --- |
 | `docs/design/` | Current implementation and architecture | Yes |
 | `docs/adr/` | Accepted decisions, rationale and trade-offs | Yes |
-| `deploy/` | Service configuration consumed by Compose | Yes, with environment references for secrets |
 | `preview/` | Local, read-only reply context prototype | Yes |
-| `tests/local/` | Tests independent of PostgreSQL, including offline SQLite fixtures | Yes |
+| `tests/local/` | Tests independent of storage services | Yes |
 | `tests/integration/` | Real PostgreSQL storage and dispatcher integration tests | Yes |
 | `evals/suites/` | Evaluation runners, case contracts and scoring rules | Yes |
 | `evals/datasets/` | Entire local datasets, including descriptions, manifests, cases and annotations | No |
 | `evals/runs/` | Generated exports, isolated indices and evaluation results | No |
 | `var/postgres/` | Active PostgreSQL originals, registry, indexing queue and search data | No |
-| `var/agent/` | Preserved pre-migration SQLite files | No |
+| `var/agent/` | Preserved historical source files; no current adapter | No |
 | `var/backups/` | Migration snapshots and database backups | No |
-| `var/openviking/` | Persistent OpenViking workspace | No |
+| `var/openviking/` | Preserved retired workspace; no current adapter | No |
 | `var/logs/` | Application logs | No |
 | `.scratch/` | Temporary research, interview notes and working drafts | No |
 | `.github/agents/` | Contributor-agent workflow conventions | Yes |
@@ -32,9 +31,8 @@ specific to a private corpus. Reusable evaluation infrastructure belongs in
 `evals/suites/` and must run its automated tests without local datasets or model
 calls. Each local dataset should carry its own provenance and coverage notes.
 
-Treat an evaluation index as an input to a particular run. To ingest its original
-messages into the running database, use the explicit migration command and verify
-the numeric chat binding. Preserve the source snapshot and reuse cached vectors;
-see [the migration procedure](chat-memory.md#sqlite-migration). Evaluation runs
+Treat an evaluation index as an input to a particular run. Bulk-loading originals
+into PostgreSQL requires a verified numeric chat binding before group access.
+Preserve source snapshots and reuse cached vectors. Evaluation runs
 must never replace application state. Container recreation preserves `var/`;
 deleting it discards application state.

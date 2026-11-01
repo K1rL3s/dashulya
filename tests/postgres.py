@@ -1,12 +1,12 @@
-"""Test database validation and helpers for importing canonical history."""
+"""Test database validation and helpers for seeding canonical history."""
 
 import os
 import sys
+from collections.abc import Sequence
+from dataclasses import replace
 
-from dashulya.domain.memory import MemoryAccess
+from dashulya.domain.memory import MemoryAccess, OriginalMessage
 from dashulya.memory.history import CanonicalHistory
-from dashulya.memory.migrate import import_evidence
-from dashulya.memory.search import MemorySearch
 from dashulya.memory.store import MessageStore
 
 
@@ -21,14 +21,19 @@ def require_database_url() -> str:
     return url
 
 
-async def imported_history(
+async def seed_history(
     store: MessageStore,
     access: MemoryAccess,
     *,
-    imported: MemorySearch,
+    imported: Sequence[OriginalMessage],
     import_chat_id: int | None = None,
 ) -> CanonicalHistory:
-    await import_evidence(store, imported.path, import_chat_id)
+    for row in imported:
+        await store.put(
+            replace(row, collection=f"telegram:{import_chat_id}", chat_id=import_chat_id)
+            if import_chat_id is not None
+            else row
+        )
     return CanonicalHistory(store, access)
 
 
