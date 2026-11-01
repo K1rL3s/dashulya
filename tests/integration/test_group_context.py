@@ -544,8 +544,9 @@ class TestGroupContext:
         assert saved[-1].reply_to_id == 1
 
     async def test_three_messages_are_sent_and_recorded_with_individual_targets(
-        self,
+        self, caplog: pytest.LogCaptureFixture
     ) -> None:
+        caplog.set_level("INFO", logger="dashulya.ai.dialogue")
         earlier = await self.feed("Earlier message", owner=False)
         self.ask.return_value = SimpleNamespace(
             content=AsyncMock(
@@ -567,11 +568,10 @@ class TestGroupContext:
             if isinstance(call.args[1], SendMessage)
         ]
         assert [send.text for send in sends] == ["First", "Second", "Third"]
-        expected_targets = [earlier.message_id, trigger.message_id, trigger.message_id]
+        expected_targets = [earlier.message_id, None, trigger.message_id]
         assert [
-            send.reply_parameters.message_id
+            send.reply_parameters.message_id if send.reply_parameters else None
             for send in sends
-            if send.reply_parameters is not None
         ] == expected_targets
         saved = (
             await self.store.context(
@@ -591,6 +591,17 @@ class TestGroupContext:
         )
         assert [item.message_id for item in delivered] == [
             item.message_id for item in self.sent
+        ]
+        targets = [
+            record.__dict__
+            for record in caplog.records
+            if record.getMessage() == "Group reply target selected"
+        ]
+        assert [record["reply_to_message_id"] for record in targets] == expected_targets
+        assert [record["reply_target_reason"] for record in targets] == [
+            "selected",
+            "unthreaded_followup",
+            "outside_context",
         ]
 
     async def test_target_outside_current_topic_defaults_to_triggering_message(

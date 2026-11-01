@@ -450,15 +450,17 @@ def _validate_replies(
             return ReplyBatch(())
         return ReplyBatch((Reply("I couldn't generate a text reply. Please try again."),))
     validated: list[Reply] = []
-    for item in messages:
+    for index, item in enumerate(messages):
         if item.reply_to_message_id is None:
             target = None
-            target_reason = "default_current_request"
+            target_reason = (
+                "default_current_request" if index == 0 else "unthreaded_followup"
+            )
         elif item.reply_to_message_id in allowed_reply_ids:
             target = item.reply_to_message_id
             target_reason = "selected"
         else:
-            target = None
+            target = request.message_id if index > 0 else None
             target_reason = "outside_context"
         validated.append(
             replace(item, text=item.text.strip(), reply_to_message_id=target)
@@ -470,7 +472,9 @@ def _validate_replies(
                     "chat_id": request.key[0],
                     "message_id": request.message_id,
                     "requested_reply_to_message_id": item.reply_to_message_id,
-                    "reply_to_message_id": target or request.message_id,
+                    "reply_to_message_id": target
+                    if target is not None or index > 0
+                    else request.message_id,
                     "reply_target_reason": target_reason,
                     "context_message_ids": sorted(allowed_reply_ids),
                 },

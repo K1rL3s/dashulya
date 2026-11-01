@@ -196,6 +196,54 @@ class _AIHandlerFixture:
 
 class TestAIHandler(_AIHandlerFixture):
     @pytest.mark.parametrize("group", [False, True])
+    async def test_followup_text_and_sticker_have_no_reply_and_preserve_topic(
+        self, group: bool
+    ) -> None:
+        store = MessageStore(self.database)
+        self.recorder.record.side_effect = store.record
+        text = "x" * 9000
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply(text),
+            Reply(sticker="joy"),
+            Reply("Follow-up"),
+        ))
+        await self.message(
+            "@dashulya_bot Hi",
+            chat={**GROUP, "is_forum": True} if group else PRIVATE,
+            message_thread_id=7 if group else None,
+            is_topic_message=group,
+            entities=[{"type": "mention", "offset": 0, "length": len("@dashulya_bot")}],
+        )
+        sent = [
+            call.args[1]
+            for call in self.requests.call_args_list
+            if isinstance(call.args[1], (SendMessage, SendSticker))
+        ]
+        assert len(sent) > 3
+        assert all(isinstance(item, SendMessage) for item in sent[:-2])
+        assert (
+            "".join(item.text for item in sent[:-2] if isinstance(item, SendMessage))
+            == text
+        )
+        assert isinstance(sent[-2], SendSticker)
+        assert sent[-2].sticker == "joy-file"
+        assert isinstance(sent[-1], SendMessage)
+        assert sent[-1].text == "Follow-up"
+        targets = [
+            item.reply_parameters.message_id if item.reply_parameters else None
+            for item in sent
+        ]
+        assert targets == [1] * (len(sent) - 2) + [None, None]
+        assert all(item.message_thread_id == (7 if group else None) for item in sent)
+        saved = [
+            call.args[0]
+            for call in self.recorder.record.await_args_list
+            if call.args[0].author_id == BOT_USER["id"]
+        ]
+        assert [item.reply_to_id for item in saved] == targets
+        assert [item.thread_id for item in saved] == [7 if group else None] * len(sent)
+
+    @pytest.mark.parametrize("group", [False, True])
     async def test_sticker_reply_is_delivered_and_recorded_with_original_metadata(
         self, group: bool
     ) -> None:

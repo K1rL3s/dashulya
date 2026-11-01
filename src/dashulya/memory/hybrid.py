@@ -2,6 +2,7 @@
 
 # ruff: file-ignore[ambiguous-unicode-character-string] -- Russian tokenization rules are intentional language data.
 
+import asyncio
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -316,29 +317,19 @@ class HybridMemory:
         eligible = await run_in_thread(lambda: self._eligible(author_id, after, before))
         if not eligible:
             return []
-        with search_stage("lexical_prepare"):
-            await self._lexical.prepare(self._texts)
-        with search_stage("lexical_search"):
-            lexical = await self._lexical.search(
-                self._lexical_keys,
-                [self._lexical_keys[i] for i in sorted(eligible)],
-                query_terms(query),
-                limit=_QUERY_CANDIDATES,
+        with search_stage("rankings"):
+            tasks = (
+                asyncio.create_task(self._lexical_ranking(query, eligible)),
+                asyncio.create_task(self._dense_ranking(query, eligible)),
             )
-        lex_positions = {key: i for i, key in enumerate(self._lexical_keys)}
-        rankings = [[lex_positions[key] for key in lexical]]
-        vector_keys = [self._vector_keys[i] for i in sorted(eligible)]
-        with search_stage("vector_coverage"):
-            has_vectors = bool(await self._vectors.saved_keys(vector_keys))
-        if has_vectors:
-            with search_stage("query_embedding"):
-                query_vector = (await self._vectors.vectors([query]))[query]
-            with search_stage("dense_search"):
-                dense = await self._vectors.nearest(
-                    vector_keys, query_vector, limit=_QUERY_CANDIDATES
-                )
-            positions = {key: i for i, key in enumerate(self._vector_keys)}
-            rankings.append([positions[key] for key in dense])
+            try:
+                rankings = await asyncio.gather(*tasks)
+            finally:
+                # A failed branch must not outlive its caller's engine lease.
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
         fused = reciprocal_rank_fusion(rankings, tie_order={i: i for i in eligible})
         allowed = {self._blocks[i][-1].source_id for i in eligible}
         candidates = [
@@ -357,6 +348,34 @@ class HybridMemory:
             sources=lambda hit: (m.source_id for m in hit.sources),
             limit=min(limit, 8),
         )
+
+    async def _lexical_ranking(self, query: str, eligible: set[int]) -> list[int]:
+        with search_stage("lexical_prepare"):
+            await self._lexical.prepare(self._texts)
+        with search_stage("lexical_search"):
+            lexical = await self._lexical.search(
+                self._lexical_keys,
+                [self._lexical_keys[i] for i in sorted(eligible)],
+                query_terms(query),
+                limit=_QUERY_CANDIDATES,
+            )
+        lex_positions = {key: i for i, key in enumerate(self._lexical_keys)}
+        return [lex_positions[key] for key in lexical]
+
+    async def _dense_ranking(self, query: str, eligible: set[int]) -> list[int]:
+        vector_keys = [self._vector_keys[i] for i in sorted(eligible)]
+        with search_stage("vector_coverage"):
+            has_vectors = bool(await self._vectors.saved_keys(vector_keys))
+        if not has_vectors:
+            return []
+        with search_stage("query_embedding"):
+            query_vector = (await self._vectors.vectors([query]))[query]
+        with search_stage("dense_search"):
+            dense = await self._vectors.nearest(
+                vector_keys, query_vector, limit=_QUERY_CANDIDATES
+            )
+        positions = {key: i for i, key in enumerate(self._vector_keys)}
+        return [positions[key] for key in dense]
 
     def _eligible(
         self, author_id: int | None, after: str | None, before: str | None

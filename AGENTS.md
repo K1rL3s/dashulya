@@ -100,8 +100,10 @@ overrides, and resource lifetimes. [GLOSSARY.md](GLOSSARY.md) defines domain ter
   Use send time when interpreting relative dates, including delayed messages.
 - **Replies:** the reply agent returns up to three ordered messages, each with
   structured text and an optional message ID; reaction-only turns use an empty list.
-  Accept a group reply target only from that request's selected context; otherwise
-  use the triggering message, as in private chats. Each message's chunks share its target.
+  Accept explicit group reply targets only from that request's selected context;
+  invalid IDs fall back to the triggering message. A null first-message target
+  also defaults to the triggering message; later null targets send without a reply,
+  including in private chats. Each message's chunks share its target.
   Render Markdown into ordinary Telegram messages with explicit entities using
   the slop-writer-based renderer in `bot/formatting.py`. Preserve formatting and
   UTF-16 offsets when chunking; tables become monospace blocks. Keep one send

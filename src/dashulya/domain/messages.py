@@ -73,7 +73,12 @@ class Reply:
     """One output message: Markdown text or an emotion from Dashulya's sticker set."""
 
     text: str = ""
-    reply_to_message_id: int | None = None
+    reply_to_message_id: Annotated[
+        int | None,
+        Field(
+            description="Original message ID from the supplied reply context. Null on the first output replies to the incoming request; null on later outputs sends without a reply. For messages to the same person, set the ID only on the first.",
+        ),
+    ] = None
     sticker: StickerEmotion | None = None
 
     def __post_init__(self) -> None:

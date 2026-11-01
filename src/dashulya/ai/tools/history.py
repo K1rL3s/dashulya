@@ -127,7 +127,7 @@ async def chat_history(
     ```sql
     messages (
         source_id TEXT NOT NULL,            -- Canonical ID for exact reads and media.
-        chat TEXT NOT NULL,                 -- Source collection key.
+        chat TEXT NOT NULL,                 -- Canonical key, e.g. 'telegram:-100123'.
         chat_id BIGINT NULL,                -- Telegram chat ID; NULL for unbound archives.
         message_id BIGINT NOT NULL,          -- Telegram message ID.
         text TEXT NOT NULL,                 -- Original text/caption; may be empty.
@@ -137,7 +137,7 @@ async def chat_history(
         username TEXT NULL,                 -- Sender handle.
         is_bot BOOLEAN NULL,
         chat_title TEXT NOT NULL,
-        chat_username TEXT NULL,
+        chat_username TEXT NULL,             -- Group handle without @, e.g. 'example_chat'.
         topic_id BIGINT NULL,                -- Forum topic ID.
         reply_to_message_id BIGINT NULL,     -- Parent message ID in the same chat/topic.
         edited_at TIMESTAMPTZ NULL,
@@ -147,6 +147,11 @@ async def chat_history(
         archive_key TEXT NULL               -- Import reference.
     )
     ```
+    In groups, messages already contains only the current group; omit chat-selection
+    WHERE predicates. In owner-private conversations, narrow to the requested group
+    with chat_id = -100123 or chat_username = 'example_chat'. Use chat only with an
+    observed canonical key such as 'telegram:-100123' or 'archive:...'.
+
     Key: (chat, message_id). Join replies within that chat and use
     IS NOT DISTINCT FROM for nullable topic IDs. Timestamp literals need an offset.
     Group local days with (sent_at AT TIME ZONE 'Europe/Moscow')::date;
@@ -170,7 +175,7 @@ async def chat_history(
     To view saved media, select one original's source_id with LIMIT 1;
     image.status reports whether an image or preview was supplied.
 
-    Examples (replace sample IDs with observed IDs):
+    Examples (replace sample IDs and handles with observed values):
     - Case 1: Read messages between two IDs, including both endpoints.
       {"sql": ["SELECT message_id,author,text,url FROM messages WHERE message_id BETWEEN 20000 AND 20100 ORDER BY message_id LIMIT 50"]}
     - Case 2: Read the thread containing a message, including saved sibling branches.
@@ -179,6 +184,8 @@ async def chat_history(
       {"sql": ["SELECT count(*) AS matches FROM messages WHERE text ILIKE '%deployment%' AND sent_at >= TIMESTAMPTZ '2026-10-01 00:00:00+03' AND sent_at < TIMESTAMPTZ '2026-11-01 00:00:00+03'"]}
     - Case 4: Batch a participant's messages and an independent exact count.
       {"sql": ["SELECT message_id,sent_at,author,text,url FROM messages WHERE author_id = 42 AND text ILIKE '%deployment%' ORDER BY message_id DESC LIMIT 20", "SELECT count(*) AS matches FROM messages WHERE author_id = 42 AND text ILIKE '%deployment%'"]}
+    - Case 5: Only in an owner-private conversation, read one group by its handle.
+      {"sql": ["SELECT message_id,sent_at,author,text,url FROM messages WHERE chat_username = 'example_chat' ORDER BY sent_at DESC,message_id DESC LIMIT 20"]}
     """
     result = await history.sql(sql)
     attachments = []

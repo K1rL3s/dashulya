@@ -107,8 +107,13 @@ messages, each with `text` and nullable `reply_to_message_id`. An empty list
 allows a reaction-only turn. Each message may choose the current request or
 another message actually included in this reply context. Validate each ID
 against that exact selection before Telegram
-delivery; null or an ID outside the selection defaults to the triggering message.
-Private replies also default to the triggering message. Send the messages in
+delivery; an ID outside the selection defaults to the triggering message.
+For the first output message, null also defaults to the triggering message.
+For subsequent outputs, null sends without a Telegram reply, so text followed
+by a sticker can address one person without repeating the reply attachment.
+Private messages use the same first-message default and untargeted follow-ups.
+Explicit allowed IDs on later outputs can address another participant.
+Send the messages in
 order, using each chosen target for every chunk of that message, and record
 each actual reply relationship. Long messages retain Telegram-length chunking.
 Keep the delivery lock through the entire batch; a send failure stops remaining

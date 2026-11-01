@@ -540,7 +540,7 @@ class TestDialogue:
                     "default_current_request"
                     if target is None
                     else "selected"
-                    if expected is not None
+                    if target in {1, 5}
                     else "outside_context"
                 )
                 assert event["reply_target_reason"] == reason
@@ -626,7 +626,7 @@ class TestDialogue:
         assert result == ReplyBatch((
             Reply("First", 1),
             Reply("Second", 5),
-            Reply("Third"),
+            Reply("Third", 5),
         ))
 
     async def test_private_images_survive_followup_and_oldest_are_evicted_at_budget(

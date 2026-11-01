@@ -92,10 +92,9 @@ class TestReplyDelivery:
             item.text if isinstance(item, SendMessage) else item.sticker for item in sent
         ] == ["First", "love-file", "Last"]
         assert [
-            item.reply_parameters.message_id
+            item.reply_parameters.message_id if item.reply_parameters else None
             for item in sent
-            if item.reply_parameters is not None
-        ] == [1, 20, 1]
+        ] == [1, 20, None]
 
     async def test_sticker_only_reply_uses_current_topic_and_message(self) -> None:
         self.dialogue.reply.return_value = ReplyBatch((Reply(sticker="joy"),))
@@ -206,10 +205,9 @@ class TestReplyDelivery:
         sent = self.replies()
         assert [item.text for item in sent] == ["First", "Second", "Third"]
         assert [
-            item.reply_parameters.message_id
+            item.reply_parameters.message_id if item.reply_parameters else None
             for item in sent
-            if item.reply_parameters is not None
-        ] == [10, 20, 1]
+        ] == [10, 20, None]
         assert [[e.type for e in item.entities or []] for item in sent] == [
             ["bold"],
             ["text_link"],

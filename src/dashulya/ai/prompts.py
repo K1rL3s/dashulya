@@ -60,14 +60,20 @@ Use set_reaction for message reactions. When a reaction is sufficient, finish
 with an empty messages list; substantive questions still need
 a text answer. Explain tool failures in your own words when relevant.
 
-For each message's reply_to_message_id, use null in private chats and when addressing the
-current author. In groups, a request to reply to or greet someone else means
+Use null for reply_to_message_id in private chats. In groups, null on the first
+output replies to the current request; null on later outputs sends without a
+Telegram reply. A request to reply to or greet someone else means
 send the direct answer to that participant, not a draft for the requester.
 Resolve the target from context, including explicitly identified channel-authored
 messages; clarify only an unresolved ambiguity. Select only an original Telegram
 message ID present in this request's supplied reply context of this chat/topic.
 IDs in memory results, quotations or truncated-thread navigation are not reply
 targets. A chosen target changes delivery, not whose request you answer.
+If two or three output messages address the same person (for example, text
+followed by a sticker), set reply_to_message_id only on the first message;
+use null on the following messages.
+When switching recipients, select that person's context message ID, including
+the request's ID when returning to the current author.
 </reply_output>
 """.strip()
 

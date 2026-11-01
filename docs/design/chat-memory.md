@@ -81,6 +81,14 @@ without serializing database or embedding waits across searches. Cold lexical
 preparation inserts keys in a consistent order to avoid deadlocks between
 overlapping candidate sets. No approximate vector index or ranking cap is added.
 
+After candidate filtering, lexical preparation/BM25 and vector coverage/query
+embedding/dense ranking run concurrently. Fusion waits for both ordered rankings.
+An error or request cancellation cancels and joins the sibling before releasing
+the engine lease; the original error propagates. No query embedding is created
+when the filtered snapshot has no cached document vectors. The `rankings_ms`
+metric measures their shared wall time; individual branch stages overlap and
+must not be summed as elapsed time.
+
 Hits carry canonical source IDs, originals, URLs and bounded reply/nearby
 context. Recall is bounded, and an empty result cannot prove absence or support
 an exact count. Read a complete original with
@@ -92,9 +100,10 @@ directly in JSON Schema using `Annotated[list[str], Field(...)]`. One query is
 always a one-element list. Results are ordered under `results`, each carrying a
 one-based `query_index` and `outcome=ok/error`; an individual rejection does not
 discard the other answers. A database/setup failure still fails the whole call.
-The tool description lists the `messages` columns and gives four examples: inclusive ID intervals, recursive
+The tool description lists the `messages` columns and gives five examples: inclusive ID intervals, recursive
 reply threads including sibling branches, literal counts in a fixed period and
-a participant's messages and count in one batch. Use `ORDER BY` with ID bounds
+a participant's messages and count in one batch, plus an owner-private group
+selection by handle. Use `ORDER BY` with ID bounds
 or LIMIT/OFFSET for pagination; use COUNT(*) for exact saved counts. No embedding provider is needed.
 
 The application creates a security-barrier temporary view containing only the
@@ -125,8 +134,11 @@ Coverage explicitly remains incomplete. Missing saved ancestors prevent claims
 of complete live threads.
 
 `search_memory` keeps nullable `datetime` bounds with JSON Schema `date-time`
-descriptions and explicit timezone validation. Neither tool exposes a chat
-selector. Internal maintenance readers retain their structured filters and
+descriptions and explicit timezone validation. Neither tool exposes a separate
+chat-selector argument. Group SQL is already bound to the current group; only
+owner-private SQL needs a group-selection predicate such as `chat_id` or
+`chat_username`. The `chat` column is a canonical collection key, not a handle.
+Internal maintenance readers retain their structured filters and
 canonical pagination; they are not model-facing tools.
 
 Exactly one result row per query with a canonical `source_id` can also supply that

@@ -142,10 +142,14 @@ class ReplyDelivery:
     async def _deliver(
         self, message: Message, messages: tuple[Reply, ...], progress: _DeliveryProgress
     ) -> None:
-        for item in messages:
-            reply_parameters = ReplyParameters(
-                message_id=item.reply_to_message_id or message.message_id,
-                allow_sending_without_reply=True,
+        for index, item in enumerate(messages):
+            target = item.reply_to_message_id
+            if target is None and index == 0:
+                target = message.message_id
+            reply_parameters = (
+                ReplyParameters(message_id=target, allow_sending_without_reply=True)
+                if target is not None
+                else None
             )
             if item.sticker is not None:
                 progress.stage = "sticker_lookup"
