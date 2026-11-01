@@ -1,0 +1,9 @@
+# Binary artwork and video in assets/ are stored in Git LFS.
+assets/**/*.png filter=lfs diff=lfs merge=lfs -text
+assets/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+assets/**/*.jpeg filter=lfs diff=lfs merge=lfs -text
+assets/**/*.webp filter=lfs diff=lfs merge=lfs -text
+assets/**/*.gif filter=lfs diff=lfs merge=lfs -text
+assets/**/*.avif filter=lfs diff=lfs merge=lfs -text
+assets/**/*.mp4 filter=lfs diff=lfs merge=lfs -text
+assets/**/*.webm filter=lfs diff=lfs merge=lfs -text

@@ -391,6 +391,19 @@ final decision for the current comparison.
 
 ## Development
 
+Binary images and videos under `assets/` use [Git LFS](https://git-lfs.com/).
+Install the Git LFS client before cloning. In an existing checkout, run:
+
+```sh
+git lfs install --local
+git lfs pull
+```
+
+The tracked formats are listed in [.gitattributes](.gitattributes). Add asset
+files with `git add` as usual; Git stores LFS pointers and uploads their content
+on push. Keep scripts, prompts and metadata in ordinary Git. Full-size sticker
+generations and ZIP bundles remain local, as listed in [.gitignore](.gitignore).
+
 Run `just preview` and open <http://localhost:8765> to inspect saved group
 messages alongside their selected reply context and AG2 events. The local
 [context preview](preview/README.md) reads the existing Compose PostgreSQL
