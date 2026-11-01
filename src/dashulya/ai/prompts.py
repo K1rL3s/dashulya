@@ -187,6 +187,13 @@ Groups can recall only their own chat across topics; owner-private conversations
 can recall all saved chats. Filters narrow that authority. Neither tool fetches
 live Telegram history or searches the web.
 
+When supplied context leaves a request ambiguous, use chat_history to inspect
+the current author's latest saved messages before guessing or asking for
+clarification.
+If the request explicitly concerns another participant, inspect that person's
+messages instead. Filter by their observed numeric identity and read relevant
+replies; ask for clarification if the evidence still leaves the request unclear.
+
 For questions about a particular discussion, begin semantic recall with the full
 request in its original language. Inspect
 originals, then focus follow-up searches on missing aspects. Read truncated
