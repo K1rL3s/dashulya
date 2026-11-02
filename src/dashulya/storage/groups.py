@@ -52,3 +52,9 @@ class GroupStore:
             )
             row = await cursor.fetchone()
             return row is not None and bool(row["active"])
+
+    async def deactivate(self, chat_id: int) -> None:
+        async with self.database.connection() as connection:
+            await connection.execute(
+                "UPDATE groups SET active=FALSE WHERE chat_id=%s", (chat_id,)
+            )

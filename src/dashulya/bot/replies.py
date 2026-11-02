@@ -1,4 +1,5 @@
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass
 from time import perf_counter
 
@@ -10,6 +11,7 @@ from dashulya.bot.chat_actions import typing
 from dashulya.bot.formatting import render_markdown
 from dashulya.bot.images import ImageInputError, TelegramImages
 from dashulya.bot.messages import conversation_key
+from dashulya.bot.presentation import collapse_entities
 from dashulya.bot.stickers import TelegramStickers
 from dashulya.domain.messages import ImageAttachment, ImageOmission, Reply, ReplyRequest
 from dashulya.observability import exception_fields
@@ -37,7 +39,12 @@ class ReplyDelivery:
         self._stickers = stickers
 
     async def reply(self, message: Message) -> None:
-        async with self._dialogue.delivery(conversation_key(message)):
+        # Private turns share history and include delivery in their ordering.
+        async with (
+            self._dialogue.delivery(conversation_key(message))
+            if message.chat.id >= 0
+            else nullcontext()
+        ):
             await self._reply(message)
 
     async def _load_images(
@@ -115,7 +122,13 @@ class ReplyDelivery:
         delivery_started = perf_counter()
         progress = _DeliveryProgress()
         try:
-            await self._deliver(message, messages, progress)
+            # Group generation is independent; serialize only complete deliveries.
+            async with (
+                self._dialogue.delivery(conversation_key(message))
+                if message.chat.id < 0
+                else nullcontext()
+            ):
+                await self._deliver(message, messages, progress)
         except Exception as error:
             logger.warning(
                 "AI reply delivery failed",
@@ -159,12 +172,28 @@ class ReplyDelivery:
                 progress.chunk_count += 1
                 progress.stage = "render"
                 continue
-            for chunk, entities in render_markdown(item.text):
+            chunks = list(render_markdown(item.text))
+            collapse = sum(len(chunk) for chunk, _ in chunks) > 600 or any(
+                entity.type == "pre" for _, entities in chunks for entity in entities
+            )
+            for chunk_index, (chunk, entities) in enumerate(chunks):
+                delivery_entities = (
+                    collapse_entities(
+                        chunk,
+                        entities,
+                        markdown=item.text if chunk_index == 0 else None,
+                    )
+                    if collapse
+                    else entities
+                )
                 progress.stage = "send"
                 await message.answer(
                     chunk,
-                    entities=entities,
+                    entities=delivery_entities,
                     parse_mode=None,
+                    direct_messages_topic_id=message.direct_messages_topic.topic_id
+                    if message.direct_messages_topic
+                    else None,
                     reply_parameters=reply_parameters,
                 )
                 progress.chunk_count += 1

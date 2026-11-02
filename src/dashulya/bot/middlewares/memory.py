@@ -12,6 +12,7 @@ from aiogram.methods.base import Response, TelegramType
 from aiogram.types import Message, TelegramObject, Update
 
 from dashulya.bot.messages import capture_message
+from dashulya.bot.presentation import rich_html_text
 from dashulya.domain.memory import MessageRecorder
 
 
@@ -75,7 +76,11 @@ class CaptureSentMessagesMiddleware(BaseRequestMiddleware):
             text = (
                 method.text
                 if isinstance(method, SendMessage)
-                else method.rich_message.markdown
+                else (
+                    rich_html_text(method.rich_message.html)
+                    if method.rich_message.html is not None
+                    else method.rich_message.markdown
+                )
                 if isinstance(method, SendRichMessage)
                 else None
             )

@@ -430,8 +430,7 @@ class TestGroupContext:
             )
         ).messages
         assert len(saved) == 2
-        assert saved[-1].text == self.sent[-1].text
-        assert 0 < len(saved[-1].text) <= 4096
+        assert saved[-1].text == "x" * 4000
         assert saved[-1].reply_to_id == 1
         assert sends == 2
 
@@ -500,6 +499,9 @@ class TestGroupContext:
         assert len(sends) > 1
         assert "".join(send.text for send in sends) == text
         for send in sends:
+            assert any(
+                entity.type == "expandable_blockquote" for entity in send.entities or []
+            )
             assert send.reply_parameters is not None
             assert send.reply_parameters.message_id == 1
         saved = (

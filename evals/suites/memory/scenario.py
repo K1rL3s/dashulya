@@ -426,6 +426,7 @@ async def replay(
         EmbeddingCache(database, measured_embedding),
         owner_user_id=cases[0].user_id,
     )
+    await memory.prepare_cached()
     formatter = MessageFormatter("Europe/Moscow", bot_id, owner_id=cases[0].user_id)
     container = make_async_container(
         ScenarioTools(),

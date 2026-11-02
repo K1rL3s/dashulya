@@ -5,7 +5,6 @@ import re
 from collections.abc import Iterable
 from copy import copy
 from typing import Any
-from urllib.parse import urlsplit
 
 from ag2 import Context
 from ag2.events import TextInput, ToolCallEvent, ToolErrorEvent, ToolResultEvent
@@ -45,10 +44,6 @@ MCP_ERROR_CATEGORIES = {
 }
 
 
-class WebInputError(ValueError):
-    """A fixed explanation of invalid model-supplied web-tool arguments."""
-
-
 def _web_error_fields(error: BaseException) -> dict[str, object]:
     fields = exception_fields(error)
     # MCPToolkit exposes MCP rejections as RuntimeError(str(CallToolResult)),
@@ -86,35 +81,6 @@ def _web_error_fields(error: BaseException) -> dict[str, object]:
             504: "timeout",
         }.get(status, "provider_error" if status >= 500 else "unknown")
     return fields
-
-
-def _input_error(event: ToolCallEvent) -> str | None:
-    arguments = event.serialized_arguments
-    if event.name == "search_web_pages":
-        query = arguments.get("query")
-        if not isinstance(query, str) or not query.strip() or len(query) > 2_000:
-            return "Use a nonempty public query of at most 2000 characters."
-        for name in ("site", "published_after", "published_before"):
-            value = arguments.get(name)
-            if value is not None and (
-                not isinstance(value, str) or not value.strip() or len(value) > 253
-            ):
-                return "Use nonempty site/date filters of at most 253 characters."
-    else:
-        value = arguments.get("url")
-        if not isinstance(value, str) or len(value) > 2_048:
-            return "Provide a valid public HTTP(S) URL without credentials."
-        parsed = urlsplit(value)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-        ):
-            return "Provide a valid public HTTP(S) URL without credentials."
-        if "live" in arguments and type(arguments["live"]) is not bool:
-            return "Use a boolean live flag."
-    return None
 
 
 def _failure(event: ToolCallEvent, message: str) -> ToolErrorEvent:
@@ -173,8 +139,6 @@ async def _web_call(
 ) -> ToolResultType:
     fields = {"tool_name": event.name, "tool_call_id": event.id}
     try:
-        if error := _input_error(event):
-            return ToolErrorEvent.from_call(event, WebInputError(error))
         async with asyncio.timeout(WEB_TIMEOUT_SECONDS):
             result = await call_next(_provider_call(event), context)
             if isinstance(result, ToolErrorEvent):
@@ -199,22 +163,13 @@ async def _web_call(
 
 
 def _provider_call(event: ToolCallEvent) -> ToolCallEvent:
-    arguments = event.serialized_arguments
+    arguments = dict(event.serialized_arguments)
     if event.name == "search_web_pages":
-        arguments = {
-            key: arguments[key]
-            for key in ("query", "site", "published_after", "published_before")
-            if arguments.get(key) is not None
-        }
-        arguments.update(
-            max_results=SEARCH_RESULTS, snippet_max_length=SEARCH_TEXT_CHARACTERS
-        )
+        arguments.setdefault("max_results", SEARCH_RESULTS)
+        arguments.setdefault("snippet_max_length", SEARCH_TEXT_CHARACTERS)
     else:
-        arguments = {
-            "url": arguments["url"],
-            "live": arguments.get("live", False),
-            "max_chars": PAGE_TEXT_CHARACTERS,
-        }
+        arguments.setdefault("live", False)
+        arguments.setdefault("max_chars", PAGE_TEXT_CHARACTERS)
     call = copy(event)
     call.serialized_arguments = {**arguments, "output_format": "json"}
     return call

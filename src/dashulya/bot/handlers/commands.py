@@ -1,4 +1,4 @@
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 from dishka.integrations.aiogram import FromDishka, inject
@@ -23,17 +23,29 @@ async def start(message: Message, groups: FromDishka[GroupRegistry]) -> None:
     )
 
 
+@inject
+async def stop(message: Message, groups: FromDishka[GroupRegistry]) -> None:
+    await groups.deactivate(message.chat.id)
+    await message.answer(
+        "Replies paused in this group 💋\n"
+        "Message capture continues. Only my owner can enable replies again with /start."
+    )
+
+
 async def show_help(message: Message) -> None:
     await message.answer(
         "Here's what I can do 💋\n\n"
         "/start — introduce myself; activate me in this group\n"
+        "/stop — owner or chat admins can pause group replies; keep saving messages\n"
         "/help — show this guide\n"
         "/groups — list the groups I know I'm in\n"
         "/clear — reset your private conversation\n\n"
         "Send me a private message, mention my @username, or reply to me in a group. "
         "I also check whether messages naming Dashulya need an answer; "
         "/clear works only in private chats.\n\n"
-        "In each group, the owner must send /start before I can respond.\n\n"
+        "Only my owner can enable group replies with /start. "
+        "The owner or that group's administrators can pause them with /stop. "
+        "Message capture continues while replies are paused.\n\n"
         "With chat history connected, I can also find earlier discussions "
         "and link to the original messages."
     )
@@ -42,5 +54,6 @@ async def show_help(message: Message) -> None:
 def create_router() -> Router:
     router = Router(name=__name__)
     router.message.register(start, CommandStart())
+    router.message.register(stop, Command("stop"), F.chat.type.in_(GROUP_TYPES))
     router.message.register(show_help, Command("help"))
     return router

@@ -1,10 +1,14 @@
 import asyncio
+import json
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import httpx2
 import pytest
 from ag2 import Agent
+from ag2.config import ModelConfig, OpenAIResponsesConfig
 from ag2.events import ToolCallEvent
 from ag2.testing import TestConfig
 from dirty_equals import IsPartialDict
@@ -19,7 +23,13 @@ from dashulya.domain.memory import (
 from dashulya.domain.messages import Reply, ReplyBatch, ReplyRequest
 from dashulya.main import create_container
 from dashulya.main.config import Settings
-from tests.support import TEST_API_KEY, MemoryOverride, ModelOverrides, reply_json
+from tests.support import (
+    TEST_API_KEY,
+    MemoryOverride,
+    ModelOverrides,
+    input_payload,
+    reply_json,
+)
 
 NOW = datetime(2026, 10, 27, tzinfo=UTC)
 
@@ -31,7 +41,7 @@ class TestDialogueRecall:
         self.cleanup = cleanup
 
     async def dialogue(
-        self, *responses: str | ToolCallEvent
+        self, *responses: str | ToolCallEvent, config: ModelConfig | None = None
     ) -> tuple[Dialogue, Agent[ReplyBatch], ChatMemoryService]:
         self.backend = AsyncMock(spec=MemoryBackend)
         self.backend.search.return_value = {"coverage": {}, "hits": []}
@@ -43,7 +53,9 @@ class TestDialogueRecall:
         container = create_container(
             Settings(bot_token="123:TEST", openai_api_key=TEST_API_KEY, owner_user_id=42),
             MemoryOverride(self.backend, reader=self.reader),
-            ModelOverrides(reply=TestConfig(*responses), decision=TestConfig("false")),
+            ModelOverrides(
+                reply=config or TestConfig(*responses), decision=TestConfig("false")
+            ),
         )
         self.cleanup.push_async_callback(container.close)
         return (
@@ -167,3 +179,106 @@ class TestDialogueRecall:
         ):
             await self.reply(dialogue)
         assert cancelled.is_set()
+
+    @pytest.mark.parametrize("partial_batch", [False, True])
+    async def test_next_request_repairs_interrupted_tools_and_preserves_history(
+        self, partial_batch: bool
+    ) -> None:
+        requests: list[dict[str, Any]] = []
+
+        def respond(request: httpx2.Request) -> httpx2.Response:
+            body = json.loads(request.content)
+            requests.append(body)
+            if len(requests) == 2:
+                output: list[dict[str, Any]] = [
+                    {
+                        "type": "function_call",
+                        "call_id": "interrupted",
+                        "name": "search_memory",
+                        "arguments": '{"query":"Earlier discussion"}',
+                    }
+                ]
+                if partial_batch:
+                    output.append({
+                        "type": "function_call",
+                        "call_id": "completed",
+                        "name": "chat_history",
+                        "arguments": '{"sql":["SELECT count(*) AS count FROM messages"]}',
+                    })
+            else:
+                if len(requests) >= 3:
+                    items = body["input"]
+                    results = {
+                        item["call_id"]: item["output"]
+                        for item in items
+                        if item.get("type") == "function_call_output"
+                    }
+                    assert "interrupted" in results, "Unanswered tool reaches provider"
+                    assert "not completed" in results["interrupted"]
+                    if partial_batch:
+                        assert json.loads(input_payload(results["completed"])) == {
+                            "query_count": 1,
+                            "results": [{"count": 1, "coverage": {}}],
+                        }
+                    assert any(
+                        item.get("role") == "assistant"
+                        and "Earlier answer" in item["content"]
+                        for item in items
+                    ), "Successful history was lost"
+                    assert len(results) == (2 if partial_batch else 1)
+                    assert sum(
+                        item.get("type") == "function_call_output" for item in items
+                    ) == len(results), "Repair duplicated tool results"
+                output = [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": reply_json("Earlier answer"),
+                                "annotations": [],
+                            }
+                        ],
+                    }
+                ]
+            return httpx2.Response(
+                200,
+                json={
+                    "id": f"resp_{len(requests)}",
+                    "object": "response",
+                    "created_at": 1700000000,
+                    "status": "completed",
+                    "model": "test-model",
+                    "output": output,
+                },
+            )
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(respond)) as http:
+            dialogue, _, _ = await self.dialogue(
+                config=OpenAIResponsesConfig(
+                    model="test-model", api_key=TEST_API_KEY, http_client=http
+                )
+            )
+            await self.reply(dialogue)
+
+            async def stalled(query: str, **kwargs: object) -> dict[str, object]:
+                await asyncio.Future[None]()
+                return {}
+
+            self.backend.search.side_effect = stalled
+            timeout = asyncio.timeout
+            with (
+                patch(
+                    "dashulya.ai.dialogue.asyncio.timeout",
+                    side_effect=lambda seconds: timeout(0.1),
+                ),
+                pytest.raises(TimeoutError),
+            ):
+                await self.reply(dialogue)
+            for _ in range(2):
+                assert await self.reply(dialogue) == ReplyBatch((
+                    Reply("Earlier answer"),
+                ))
+        assert len(requests) == 4
+        self.backend.search.assert_awaited_once()

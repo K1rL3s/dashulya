@@ -1,5 +1,8 @@
 # Use chat-isolated ParadeDB snapshots for lexical recall
 
+[ADR 0009](0009-rank-persistent-search-documents-in-postgresql.md) supersedes the
+per-request snapshot lifecycle and exact filtered-corpus statistics below.
+
 Replace [ADR 0005](0005-unify-memory-in-postgresql.md)'s hand-written SQL BM25
 with ParadeDB `pg_search` 0.26.4, using the tested flat reply blocks with
 `k1=2.0` and `b=0.75`. Native retrieval substantially reduced measured query and

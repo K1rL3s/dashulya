@@ -14,12 +14,14 @@ from aiogram.methods import (
     SendSticker,
     TelegramMethod,
 )
-from aiogram.types import Message
+from aiogram.types import Message, MessageEntity
 
 from dashulya.ai.dialogue import Dialogue
 from dashulya.bot.images import TelegramImages
+from dashulya.bot.middlewares.memory import CaptureSentMessagesMiddleware
 from dashulya.bot.replies import ReplyDelivery
 from dashulya.bot.stickers import TelegramStickers
+from dashulya.domain.memory import MessageRecorder
 from dashulya.domain.messages import ImageOmission, Reply, ReplyBatch
 from dashulya.observability import JsonLogFormatter
 from tests.support import dashulya_sticker_set
@@ -70,6 +72,16 @@ class TestReplyDelivery:
             for call in self.requests.call_args_list
             if isinstance(call.args[1], SendRichMessage)
         ]
+
+    @staticmethod
+    def collapse_span(reply: SendMessage) -> MessageEntity:
+        spans = [
+            entity
+            for entity in reply.entities or []
+            if entity.type == "expandable_blockquote"
+        ]
+        assert len(spans) == 1, "Expected one native collapsible quotation"
+        return spans[0]
 
     async def test_sticker_and_text_keep_their_order_and_reply_targets(self) -> None:
         self.dialogue.reply.return_value = ReplyBatch((
@@ -304,15 +316,17 @@ class TestReplyDelivery:
         assert reply.reply_parameters.message_id == 1
         assert self.rich_replies() == []
 
-    async def test_tables_use_monospace_entities(self) -> None:
-        text = "## Models\n\n| Model | Cost |\n| --- | --- |\n| Luna | Low |\n\n**More information**"
-        self.dialogue.reply.return_value = ReplyBatch((Reply(text),))
+    async def test_tables_are_collapsed_with_monospace_formatting(self) -> None:
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply("| a | b |\n| --- | --- |\n| 1 | 2 |"),
+        ))
         await self.message("Compare models")
         assert self.rich_replies() == []
-        reply = self.replies()[-1]
-        assert [e.type for e in reply.entities or []] == ["bold", "pre", "bold"]
-        assert "Model" in reply.text
-        assert "Luna" in reply.text
+        reply = self.replies()[0]
+        assert reply.text == "a | b\n--+--\n1 | 2"
+        assert [
+            (entity.type, entity.offset, entity.length) for entity in reply.entities or []
+        ] == [("expandable_blockquote", 0, 17), ("pre", 0, 17)]
 
     async def test_rejected_entity_message_is_not_retried_as_plain_text(self) -> None:
         async def request(bot: Bot, method: TelegramMethod[Any], **kwargs: Any) -> bool:
@@ -345,14 +359,279 @@ class TestReplyDelivery:
         assert self.rich_replies() == []
         assert len(self.replies()) == 1
 
-    async def test_long_answer_keeps_formatting_in_text_chunks(self) -> None:
-        text = "a" * 33000
-        self.dialogue.reply.return_value = ReplyBatch((Reply(f"**{text}**"),))
+    async def test_long_answer_is_collapsed_and_keeps_formatting_in_every_chunk(
+        self,
+    ) -> None:
+        text = "💋" * 16500
+        self.dialogue.reply.return_value = ReplyBatch((Reply(f"**{text}**", 25),))
+        await self.message("Long answer")
+        sent = self.replies()
+        assert self.rich_replies() == []
+        assert len(sent) == 9
+        assert "".join(reply.text for reply in sent) == text
+        for reply in sent:
+            assert [entity.type for entity in reply.entities or []] == [
+                "expandable_blockquote",
+                "bold",
+            ]
+            assert all(
+                entity.extract_from(reply.text) == reply.text
+                for entity in reply.entities or []
+            )
+            assert reply.reply_parameters is not None
+            assert reply.reply_parameters.message_id == 25
+
+    @pytest.mark.parametrize(
+        ("lead", "offset"),
+        [
+            ("**Summary** 💋\nA second line.", 27),
+            ("a" * 240, 242),
+            ("a" * 241, 0),
+            ("One\nTwo\nThree", 0),
+            ("## Heading", 0),
+            ("Heading\n=======", 0),
+            ("Heading\n-------", 0),
+            ("- first\n- second", 0),
+            ("> quoted", 0),
+        ],
+    )
+    async def test_only_a_short_prose_lead_stays_outside_collapse(
+        self, lead: str, offset: int
+    ) -> None:
+        self.dialogue.reply.return_value = ReplyBatch((Reply(lead + "\n\n" + "b" * 601),))
+        await self.message("Details please")
+        assert self.rich_replies() == []
+        reply = self.replies()[0]
+        quote = self.collapse_span(reply)
+        assert quote.offset == offset
+        assert quote.extract_from(reply.text).endswith("b" * 601)
+        if offset:
+            assert quote.extract_from(reply.text) == "b" * 601
+
+    async def test_collapsed_code_preserves_markup_and_literal_html(self) -> None:
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply(
+                "**Summary** 💋\n\n"
+                "[source](https://example.com/?x=1&y=2) ^^under^^ ||hidden|| with `inline`\n\n"
+                "> quoted **bold**\n\n"
+                '```python\nprint("<b> & 💋")\nline two\n```\n\n'
+                "<details open>literal</details>"
+            ),
+        ))
+        await self.message("Show code")
+        assert self.rich_replies() == []
+        reply = self.replies()[0]
+        assert reply.text == (
+            "Summary 💋\n\nsource under hidden with inline\n\nquoted bold\n\n"
+            'print("<b> & 💋")\nline two\n\n<details open>literal</details>'
+        )
+        entities = reply.entities or []
+        quote = self.collapse_span(reply)
+        assert quote.offset == 12
+        assert quote.extract_from(reply.text).startswith("source under hidden")
+        assert [
+            entity.extract_from(reply.text)
+            for entity in entities
+            if entity.type == "bold"
+        ] == ["Summary", "bold"]
+        assert [
+            entity.extract_from(reply.text)
+            for entity in entities
+            if entity.type == "italic"
+        ] == ["quoted bold"]
+        assert not any(entity.type == "blockquote" for entity in entities)
+        assert (
+            next(entity for entity in entities if entity.type == "text_link").url
+            == "https://example.com/?x=1&y=2"
+        )
+        assert (
+            next(
+                entity for entity in entities if entity.type == "underline"
+            ).extract_from(reply.text)
+            == "under"
+        )
+        assert (
+            next(entity for entity in entities if entity.type == "spoiler").extract_from(
+                reply.text
+            )
+            == "hidden"
+        )
+        assert [
+            entity.extract_from(reply.text)
+            for entity in entities
+            if entity.type == "code"
+        ] == ["inline"]
+        code = next(entity for entity in entities if entity.type == "pre")
+        assert code.language == "python"
+        assert code.extract_from(reply.text) == 'print("<b> & 💋")\nline two'
+
+    @pytest.mark.parametrize(("chat_id", "topic"), [(42, None), (-123, 7), (-123, None)])
+    async def test_collapsed_delivery_records_original_text_and_routes_each_message(
+        self, chat_id: int, topic: int | None
+    ) -> None:
+        recorded = AsyncMock(spec=MessageRecorder)
+        self.bot.session.middleware(
+            CaptureSentMessagesMiddleware(recorded, owner_user_id=42)
+        )
+        original = "Summary.\n\n" + "💋" * 601 + '\n\nprint("<summary> & 💋")'
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply(
+                "Summary.\n\n"
+                + "💋" * 601
+                + '\n\n```python\nprint("<summary> & 💋")\n```',
+                25,
+            ),
+            Reply("Short follow-up"),
+        ))
+
+        next_id = 100
+
+        async def request(bot: Bot, method: TelegramMethod[Any], **kwargs: Any) -> Any:
+            nonlocal next_id
+            if isinstance(method, SendMessage):
+                message_id = next_id
+                next_id += 1
+                return Message.model_validate({
+                    "message_id": message_id,
+                    "date": 1700000000,
+                    "chat": {
+                        "id": chat_id,
+                        "type": "private" if chat_id > 0 else "supergroup",
+                        "first_name": "Owner",
+                        "title": "Group",
+                    },
+                    "from": {"id": bot.id, "is_bot": True, "first_name": "Dashulya"},
+                    "text": method.text,
+                })
+            return True
+
+        self.requests.side_effect = request
+        incoming = Message.model_validate({
+            "message_id": 1,
+            "date": 1700000000,
+            "chat": {
+                "id": chat_id,
+                "type": "private" if chat_id > 0 else "supergroup",
+                "first_name": "Owner",
+                "title": "Group",
+                "is_forum": topic is not None,
+            },
+            "from": {"id": 42, "is_bot": False, "first_name": "Owner"},
+            "is_topic_message": topic is not None,
+            "message_thread_id": topic
+            if topic is not None
+            else 88
+            if chat_id < 0
+            else None,
+            "text": "Answer",
+        }).as_(self.bot)
+        await self.delivery.reply(incoming)
+        sent = self.replies()[0]
+        assert self.rich_replies() == []
+        assert sent.chat_id == chat_id
+        assert sent.message_thread_id == topic
+        assert sent.reply_parameters is not None
+        assert sent.reply_parameters.message_id == 25
+        assert self.replies()[1].reply_parameters is None
+        rows = [call.args[0] for call in recorded.record.await_args_list]
+        assert [row.text for row in rows] == [original, "Short follow-up"]
+        assert [row.message_id for row in rows] == [100, 101]
+        assert rows[0].reply_to_id == 25
+        assert rows[0].thread_id == topic
+
+    @pytest.mark.parametrize(
+        ("body", "collapsed"),
+        [
+            ("a" * 600, False),
+            ("a" * 601, True),
+            ("💋" * 600, False),
+            ("💋" * 601, True),
+            ("[Short](https://example.com/" + "a" * 650 + ")", False),
+            ("first\nsecond\nthird\nfourth\nfifth\nsixth", False),
+        ],
+    )
+    async def test_collapse_threshold_uses_visible_unicode_characters(
+        self, body: str, collapsed: bool
+    ) -> None:
+        self.dialogue.reply.return_value = ReplyBatch((Reply(body),))
+        await self.message("Answer")
+        assert self.rich_replies() == []
+        sent = self.replies()
+        assert len(sent) == 1
+        assert (
+            any(
+                entity.type == "expandable_blockquote"
+                for entity in sent[0].entities or []
+            )
+            is collapsed
+        )
+
+    async def test_only_first_chunk_can_have_a_visible_lead(self) -> None:
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply("Lead.\n\n" + "a" * 3993 + "Tail.\n\nEnd."),
+        ))
+        await self.message("Long answer")
+        sent = self.replies()
+        assert self.rich_replies() == []
+        assert [reply.text for reply in sent] == [
+            "Lead.\n\n" + "a" * 3993,
+            "Tail.\n\nEnd.",
+        ]
+        assert [
+            (entity.offset, entity.length)
+            for reply in sent
+            for entity in reply.entities or []
+            if entity.type == "expandable_blockquote"
+        ] == [(7, 3993), (0, 11)]
+
+    @pytest.mark.parametrize("error_type", [TelegramBadRequest, TelegramNetworkError])
+    async def test_failed_collapsed_send_is_not_retried_and_stops_the_batch(
+        self, error_type: type[TelegramBadRequest | TelegramNetworkError]
+    ) -> None:
+        self.dialogue.reply.return_value = ReplyBatch((Reply("a" * 8001), Reply("Later")))
+        attempts = []
+
+        async def request(bot: Bot, method: TelegramMethod[Any], **kwargs: Any) -> bool:
+            if isinstance(method, SendMessage):
+                attempts.append(method)
+                if error_type is TelegramBadRequest:
+                    raise TelegramBadRequest(method, "PRIVATE failure")
+                raise TelegramNetworkError(method, "PRIVATE failure")
+            return True
+
+        self.requests.side_effect = request
+        with pytest.raises(error_type):
+            await self.message("Long answer")
+        assert len(attempts) == 1
+        assert len(self.replies()) == 1
+        assert self.rich_replies() == []
+
+    @pytest.mark.parametrize("lead", ["", "**Short lead**\n\n"])
+    async def test_collapsed_body_uses_ordinary_message_with_only_authored_bold(
+        self, lead: str
+    ) -> None:
+        prose = "Ordinary text " + "x" * 601
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply(
+                lead + prose + "\n\n**Only this label** stays bold; the rest is ordinary."
+            ),
+        ))
         await self.message("Long answer")
         assert self.rich_replies() == []
-        assert "".join(reply.text for reply in self.replies()) == text
-        for reply in self.replies():
-            assert [entity.type for entity in reply.entities or []] == ["bold"]
+        reply = self.replies()[0]
+        assert reply.parse_mode is None
+        entities = reply.entities or []
+        quote = self.collapse_span(reply)
+        assert quote.offset == (12 if lead else 0)
+        assert (
+            quote.extract_from(reply.text)
+            == prose + "\n\nOnly this label stays bold; the rest is ordinary."
+        )
+        assert [
+            entity.extract_from(reply.text)
+            for entity in entities
+            if entity.type == "bold"
+        ] == (["Short lead", "Only this label"] if lead else ["Only this label"])
 
     async def test_formatted_paragraphs_use_entities_without_implicit_bold(self) -> None:
         self.dialogue.reply.return_value = ReplyBatch((

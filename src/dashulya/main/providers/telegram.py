@@ -63,9 +63,7 @@ class TelegramProvider(Provider):
 
     @provide
     def access(self, settings: Settings, groups: GroupRegistry) -> AccessMiddleware:
-        return AccessMiddleware(
-            settings.owner_user_id, groups, public_group_ids=settings.public_group_ids
-        )
+        return AccessMiddleware(settings.owner_user_id, groups)
 
     @provide
     def dispatcher(

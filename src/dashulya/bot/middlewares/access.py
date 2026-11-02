@@ -1,12 +1,33 @@
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from aiogram import BaseMiddleware
-from aiogram.enums import ChatType
-from aiogram.filters import CommandStart
+from aiogram import BaseMiddleware, Bot
+from aiogram.enums import ChatMemberStatus, ChatType
+from aiogram.exceptions import TelegramAPIError
+from aiogram.filters import Command
 from aiogram.types import Message, TelegramObject
 
 from dashulya.domain.groups import GroupRegistry
+from dashulya.observability import exception_fields
+
+logger = logging.getLogger(__name__)
+
+
+async def _is_chat_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
+    try:
+        administrators = await bot.get_chat_administrators(chat_id, request_timeout=5)
+    except (TelegramAPIError, TimeoutError) as error:
+        logger.warning(
+            "Group administrator lookup failed",
+            extra={"chat_id": chat_id, "user_id": user_id, **exception_fields(error)},
+        )
+        return False
+    return any(
+        member.user.id == user_id
+        and member.status in {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}
+        for member in administrators
+    )
 
 
 class AccessMiddleware(BaseMiddleware):
@@ -14,16 +35,14 @@ class AccessMiddleware(BaseMiddleware):
         self,
         owner_user_id: int,
         groups: GroupRegistry,
-        *,
-        public_group_ids: tuple[int, ...] = (),
     ) -> None:
         if owner_user_id <= 0:
             error_message = "OWNER_USER_ID must be a positive Telegram user ID."
             raise ValueError(error_message)
         self._owner_user_id = owner_user_id
-        self._public_group_ids = frozenset(public_group_ids)
         self._groups = groups
-        self._start = CommandStart()
+        self._group_commands = Command("start", "stop")
+        self._stop = Command("stop")
 
     async def __call__(
         self,
@@ -33,23 +52,34 @@ class AccessMiddleware(BaseMiddleware):
     ) -> Any:
         # This middleware is registered on the message observer.
         assert isinstance(event, Message)
+        if (
+            event.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
+            and event.sender_chat is not None
+            and event.sender_chat.id == event.chat.id
+            and await self._stop(event, data["bot"])
+        ):
+            # Telegram identifies anonymous administrators by their own sender_chat.
+            return await handler(event, data)
         sender = event.from_user
         if sender is None or sender.is_bot:
             return None
         if sender.id != self._owner_user_id:
-            if (
-                event.chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}
-                or event.chat.id not in self._public_group_ids
-            ):
+            if event.chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
                 return None
-            # Group dialogue access does not grant owner commands or registry access.
+            # Chat administrators may pause replies; all other commands stay owner-only.
             if (event.text or event.caption or "").lstrip().startswith("/"):
-                return None
+                bot = data["bot"]
+                if not await self._stop(event, bot):
+                    return None
+                if not await _is_chat_admin(bot, event.chat.id, sender.id):
+                    return None
+                return await handler(event, data)
         if (
             event.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
             and not await self._groups.is_active(event.chat.id)
             and not (
-                sender.id == self._owner_user_id and await self._start(event, data["bot"])
+                sender.id == self._owner_user_id
+                and await self._group_commands(event, data["bot"])
             )
         ):
             return None

@@ -3,20 +3,30 @@ from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, nullcontext
 from datetime import UTC, datetime
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from ag2 import Agent
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
 from aiogram.methods import (
+    GetChatAdministrators,
     GetStickerSet,
     SendMessage,
     SendRichMessage,
     SendSticker,
     TelegramMethod,
 )
-from aiogram.types import File, Message, StickerSet, Update, User
+from aiogram.types import (
+    ChatMemberAdministrator,
+    ChatMemberOwner,
+    File,
+    Message,
+    StickerSet,
+    Update,
+    User,
+)
 
 from dashulya.database import Database
 from dashulya.domain.groups import Group
@@ -60,9 +70,32 @@ ANIMATION: dict[str, Any] = {
 }
 
 
+def administrator(
+    user_id: int, *, creator: bool = False
+) -> ChatMemberAdministrator | ChatMemberOwner:
+    user = User(id=user_id, is_bot=False, first_name="Chat administrator")
+    if creator:
+        return ChatMemberOwner(user=user, is_anonymous=False)
+    return ChatMemberAdministrator(
+        user=user,
+        can_be_edited=False,
+        is_anonymous=False,
+        can_manage_chat=True,
+        can_delete_messages=False,
+        can_manage_video_chats=False,
+        can_restrict_members=False,
+        can_promote_members=False,
+        can_change_info=False,
+        can_invite_users=False,
+        can_post_stories=False,
+        can_edit_stories=False,
+        can_delete_stories=False,
+        can_send_welcome_messages=False,
+    )
+
+
 @pytest.mark.usefixtures("_setup")
 class _AIHandlerFixture:
-    public_group_ids: tuple[int, ...] = ()
     active_group = True
 
     @pytest.fixture
@@ -81,6 +114,9 @@ class _AIHandlerFixture:
         me_patch.start()
         self.cleanup.callback(me_patch.stop)
         self.sent_id = 1000
+        self.administrators: dict[
+            int | str, list[ChatMemberAdministrator | ChatMemberOwner]
+        ] = {}
         self.requests = AsyncMock(side_effect=self.request)
         request_patch = patch.object(self.bot.session, "make_request", self.requests)
         request_patch.start()
@@ -97,7 +133,6 @@ class _AIHandlerFixture:
                 bot_token=BOT_TOKEN,
                 openai_api_key=TEST_API_KEY,
                 owner_user_id=USER["id"],
-                public_group_ids=self.public_group_ids,
             ),
             BotOverride(self.bot),
             RecorderOverride(self.recorder),
@@ -131,7 +166,9 @@ class _AIHandlerFixture:
 
     async def request(
         self, bot: Bot, method: TelegramMethod[Any], **kwargs: Any
-    ) -> Message | StickerSet | bool:
+    ) -> Message | StickerSet | bool | list[ChatMemberAdministrator | ChatMemberOwner]:
+        if isinstance(method, GetChatAdministrators):
+            return self.administrators.get(method.chat_id, [])
         if isinstance(method, GetStickerSet):
             assert method.name == "DashulyaAI"
             return dashulya_sticker_set()
@@ -217,13 +254,18 @@ class TestAIHandler(_AIHandlerFixture):
         sent = [
             call.args[1]
             for call in self.requests.call_args_list
-            if isinstance(call.args[1], (SendMessage, SendSticker))
+            if isinstance(call.args[1], (SendMessage, SendRichMessage, SendSticker))
         ]
-        assert len(sent) > 3
+        assert len(sent) == 5
         assert all(isinstance(item, SendMessage) for item in sent[:-2])
         assert (
             "".join(item.text for item in sent[:-2] if isinstance(item, SendMessage))
             == text
+        )
+        assert all(
+            any(entity.type == "expandable_blockquote" for entity in item.entities or [])
+            for item in sent[:-2]
+            if isinstance(item, SendMessage)
         )
         assert isinstance(sent[-2], SendSticker)
         assert sent[-2].sticker == "joy-file"
@@ -240,6 +282,7 @@ class TestAIHandler(_AIHandlerFixture):
             for call in self.recorder.record.await_args_list
             if call.args[0].author_id == BOT_USER["id"]
         ]
+        assert "".join(item.text for item in saved[:-2]) == text
         assert [item.reply_to_id for item in saved] == targets
         assert [item.thread_id for item in saved] == [7 if group else None] * len(sent)
 
@@ -311,27 +354,28 @@ class TestAIHandler(_AIHandlerFixture):
         assert reply.reply_parameters is not None
         assert reply.reply_parameters.message_id == 1
 
-    async def test_other_users_cannot_use_ai_or_commands_in_any_chat(
+    async def test_other_private_users_cannot_use_ai_or_commands(
         self, subtests: pytest.Subtests
     ) -> None:
         outsider = {**USER, "id": 43}
-        for chat in ({**PRIVATE, "id": 43}, GROUP):
-            for text in (
-                "Hello",
-                "Дашуля, ответь",
-                "@dashulya_bot hello",
-                "/start",
-                "/help",
-                "/groups",
-                "/clear",
-            ):
-                with subtests.test(chat=chat["type"], text=text):
-                    await self.message(text, chat=chat, sender=outsider)
+        for text in (
+            "Hello",
+            "Дашуля, ответь",
+            "@dashulya_bot hello",
+            "/start",
+            "/help",
+            "/groups",
+            "/clear",
+        ):
+            with subtests.test(text=text):
+                await self.message(text, chat={**PRIVATE, "id": 43}, sender=outsider)
         self.dialogue.reply.assert_not_awaited()
         self.dialogue.clear.assert_not_awaited()
         self.decision_agent.ask.assert_not_awaited()
         self.requests.assert_not_awaited()
-        assert (await self.groups.list_groups())[0].chat_id == GROUP["id"]
+        assert await self.groups.list_groups() == [
+            Group(GROUP["id"], GROUP["title"], active=True)
+        ]
 
     async def test_forwarding_from_owner_does_not_grant_access(self) -> None:
         await self.message(
@@ -894,7 +938,274 @@ class TestAIHandler(_AIHandlerFixture):
 
 class TestGroupActivation(_AIHandlerFixture):
     active_group = False
-    public_group_ids = (-123,)
+
+    async def test_stop_uses_current_administrators_of_the_originating_chat(self) -> None:
+        other_chat = {**GROUP, "id": -456}
+        self.administrators[-123] = [administrator(99)]
+        self.administrators[-456] = [administrator(100)]
+        await self.message("/start", chat=GROUP)
+        await self.message("/start", chat=other_chat)
+        self.requests.reset_mock()
+        await self.message("/stop", chat=other_chat, sender={**USER, "id": 99})
+        await self.message("/stop", chat=GROUP, sender={**USER, "id": 100})
+        assert self.replies() == []
+        await self.message("/stop", chat=GROUP, sender={**USER, "id": 99})
+        assert len(self.replies()) == 1
+        assert "Replies paused in this group" in self.replies()[0].text
+        await self.message("/start", chat=GROUP)
+        self.administrators[-123] = []
+        self.requests.reset_mock()
+        await self.message("/stop", chat=GROUP, sender={**USER, "id": 99})
+        assert self.replies() == []
+        await self.message(
+            "@dashulya_bot hello",
+            chat=GROUP,
+            sender={**USER, "id": 99},
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert self.replies()[-1].text == "Hello <Anna> 💋"
+
+    @pytest.mark.parametrize(
+        "error_type", [TelegramForbiddenError, TelegramNetworkError, TimeoutError]
+    )
+    async def test_admin_lookup_failure_denies_stop_but_owner_can_still_stop(
+        self,
+        error_type: type[TelegramForbiddenError | TelegramNetworkError | TimeoutError],
+    ) -> None:
+        await self.message("/start", chat=GROUP)
+
+        async def request(
+            bot: Bot, method: TelegramMethod[Any], **kwargs: Any
+        ) -> (
+            Message | StickerSet | bool | list[ChatMemberAdministrator | ChatMemberOwner]
+        ):
+            if isinstance(method, GetChatAdministrators):
+                if error_type is TimeoutError:
+                    raise TimeoutError
+                raise error_type(
+                    cast("TelegramMethod[Any]", method),
+                    "Administrator lookup unavailable",
+                )
+            return await self.request(bot, method, **kwargs)
+
+        self.requests.side_effect = request
+        self.requests.reset_mock()
+        await self.message("/stop", chat=GROUP, sender={**USER, "id": 99})
+        assert self.replies() == []
+        await self.message(
+            "@dashulya_bot hello",
+            chat=GROUP,
+            sender={**USER, "id": 99},
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert self.replies()[-1].text == "Hello <Anna> 💋"
+        self.requests.reset_mock()
+        await self.message("/stop", chat=GROUP)
+        assert len(self.replies()) == 1
+        assert "Replies paused in this group" in self.replies()[0].text
+
+    @pytest.mark.parametrize("sender_chat_type", ["channel", "supergroup"])
+    async def test_stop_from_another_sender_chat_does_not_grant_admin_access(
+        self, sender_chat_type: str
+    ) -> None:
+        await self.message("/start", chat=GROUP)
+        self.requests.reset_mock()
+        await self.message(
+            "/stop",
+            chat=GROUP,
+            sender={"id": 1087968824, "is_bot": True, "first_name": "GroupAnonymousBot"},
+            sender_chat={"id": -789, "type": sender_chat_type, "title": "Another chat"},
+            forward_origin={"type": "chat", "date": 1700000000, "sender_chat": GROUP},
+        )
+        assert self.replies() == []
+        await self.message(
+            "@dashulya_bot hello",
+            chat=GROUP,
+            sender={**USER, "id": 99},
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert self.replies()[-1].text == "Hello <Anna> 💋"
+
+    @pytest.mark.parametrize(
+        "command", ["/stop", "/stop@dashulya_bot"], ids=["bare", "qualified"]
+    )
+    async def test_anonymous_chat_admin_can_stop_but_only_owner_can_restart(
+        self, command: str
+    ) -> None:
+        anonymous = {"id": 1087968824, "is_bot": True, "first_name": "GroupAnonymousBot"}
+        await self.message("/start", chat=GROUP)
+        self.requests.reset_mock()
+        await self.message(command, chat=GROUP, sender=anonymous, sender_chat=GROUP)
+        assert len(self.replies()) == 1
+        assert "Replies paused in this group" in self.replies()[0].text
+        self.requests.reset_mock()
+        await self.message("/start", chat=GROUP, sender=anonymous, sender_chat=GROUP)
+        await self.message(
+            "@dashulya_bot hello",
+            chat=GROUP,
+            sender={**USER, "id": 99},
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert self.replies() == []
+        self.dialogue.reply.assert_not_awaited()
+        await self.message("/start", chat=GROUP)
+        await self.message(
+            "@dashulya_bot hello",
+            chat=GROUP,
+            sender={**USER, "id": 99},
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert self.replies()[-1].text == "Hello <Anna> 💋"
+
+    @pytest.mark.parametrize("chat_type", ["group", "supergroup"])
+    @pytest.mark.parametrize("creator", [False, True])
+    async def test_chat_administrators_can_stop_but_only_owner_can_restart(
+        self, chat_type: str, creator: bool
+    ) -> None:
+        chat = {**GROUP, "type": chat_type}
+        self.administrators[chat["id"]] = [administrator(99, creator=creator)]
+        await self.message("/start", chat=chat)
+        self.requests.reset_mock()
+        await self.message("/stop@dashulya_bot", chat=chat, sender={**USER, "id": 99})
+        assert len(self.replies()) == 1
+        assert "Replies paused in this group" in self.replies()[0].text
+        self.requests.reset_mock()
+        await self.message("/start", chat=chat, sender={**USER, "id": 99})
+        await self.message(
+            "@dashulya_bot hello",
+            chat=chat,
+            sender={**USER, "id": 99},
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert self.replies() == []
+        self.dialogue.reply.assert_not_awaited()
+        await self.message("/start", chat=chat)
+        await self.message(
+            "@dashulya_bot hello",
+            chat=chat,
+            sender={**USER, "id": 99},
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert self.replies()[-1].text == "Hello <Anna> 💋"
+
+    async def test_non_admin_bot_and_missing_senders_cannot_stop_active_group(
+        self,
+    ) -> None:
+        await self.message("/start", chat=GROUP)
+        self.requests.reset_mock()
+        for sender in ({**USER, "id": 99}, {**USER, "is_bot": True}):
+            await self.message(
+                "/stop@dashulya_bot",
+                chat=GROUP,
+                sender=sender,
+                forward_origin={"type": "user", "date": 1700000000, "sender_user": USER},
+            )
+        await self.message("/stop", chat=GROUP, **{"from": None})
+        assert self.replies() == []
+        await self.message(
+            "@dashulya_bot hello",
+            chat=GROUP,
+            sender={**USER, "id": 99},
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert self.replies()[-1].text == "Hello <Anna> 💋"
+        self.requests.reset_mock()
+        await self.message("/stop", chat=GROUP)
+        assert len(self.replies()) == 1
+        assert "Replies paused in this group" in self.replies()[0].text
+
+    async def test_private_stop_and_stop_for_another_bot_are_ignored(self) -> None:
+        await self.message("/start", chat=GROUP)
+        self.requests.reset_mock()
+        await self.message("/stop")
+        await self.message("/stop@other_bot", chat=GROUP)
+        self.requests.assert_not_awaited()
+        await self.message(
+            "@dashulya_bot hello",
+            chat=GROUP,
+            sender={**USER, "id": 99},
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert self.replies()[-1].text == "Hello <Anna> 💋"
+        await self.message("/stop", chat=GROUP)
+        assert "Replies paused in this group" in self.replies()[-1].text
+
+    async def test_owner_stop_acknowledges_already_inactive_group(self) -> None:
+        for text in ("/stop", "/stop@dashulya_bot"):
+            await self.message(text, chat=GROUP)
+        assert len(self.replies()) == 2
+        assert all(
+            reply.text == "Replies paused in this group 💋\n"
+            "Message capture continues. Only my owner can enable replies again with /start."
+            for reply in self.replies()
+        )
+        self.dialogue.reply.assert_not_awaited()
+        self.decision_agent.ask.assert_not_awaited()
+
+    @pytest.mark.parametrize("chat_type", ["group", "supergroup"])
+    async def test_owner_stop_pauses_only_current_group_and_capture_continues(
+        self, chat_type: str
+    ) -> None:
+        chat = {**GROUP, "type": chat_type}
+        other_chat = {**chat, "id": -456}
+        await self.message("/start", chat=chat)
+        await self.message("/start", chat=other_chat)
+        await self.message("/stop@dashulya_bot", chat=chat, message_thread_id=7)
+        self.requests.reset_mock()
+        self.recorder.record.reset_mock()
+        for sender in (USER, {**USER, "id": 99}):
+            await self.message(
+                "@dashulya_bot hello",
+                chat=chat,
+                sender=sender,
+                entities=[{"type": "mention", "offset": 0, "length": 13}],
+            )
+        self.requests.assert_not_awaited()
+        self.dialogue.reply.assert_not_awaited()
+        self.decision_agent.ask.assert_not_awaited()
+        assert [
+            call.args[0].chat_id for call in self.recorder.record.await_args_list
+        ] == [
+            -123,
+            -123,
+        ]
+        await self.message(
+            "@dashulya_bot hello",
+            chat=other_chat,
+            sender={**USER, "id": 99},
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert self.replies()[-1].chat_id == -456
+        assert self.replies()[-1].text == "Hello <Anna> 💋"
+        await self.message("/start", chat=chat)
+        await self.message(
+            "@dashulya_bot hello",
+            chat=chat,
+            sender={**USER, "id": 99},
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert self.replies()[-1].chat_id == -123
+        assert self.replies()[-1].text == "Hello <Anna> 💋"
+
+    @pytest.mark.parametrize("chat_type", ["group", "supergroup"])
+    async def test_owner_activation_opens_dialogue_to_participants_in_any_group(
+        self, chat_type: str
+    ) -> None:
+        chat = {**GROUP, "id": -456, "type": chat_type}
+        participant = {**USER, "id": 99, "first_name": "Boris"}
+        mention = [{"type": "mention", "offset": 0, "length": 13}]
+        await self.message(
+            "@dashulya_bot hello", chat=chat, sender=participant, entities=mention
+        )
+        self.requests.assert_not_awaited()
+        await self.message("/start", chat=chat)
+        self.requests.reset_mock()
+        await self.message(
+            "@dashulya_bot hello", chat=chat, sender=participant, entities=mention
+        )
+        assert len(self.replies()) == 1
+        assert self.replies()[0].chat_id == -456
+        assert self.replies()[0].text == "Hello <Anna> 💋"
 
     async def test_inactive_groups_stay_silent_for_owner_and_participants(self) -> None:
         for chat_type in ("group", "supergroup"):
@@ -975,9 +1286,7 @@ class TestGroupActivation(_AIHandlerFixture):
         self.dialogue.reply.assert_not_awaited()
 
 
-class TestPublicGroupHandler(_AIHandlerFixture):
-    public_group_ids = (-123,)
-
+class TestActiveGroupHandler(_AIHandlerFixture):
     async def test_other_participant_can_mention_bot_with_their_own_identity(
         self,
     ) -> None:
@@ -1023,7 +1332,7 @@ class TestPublicGroupHandler(_AIHandlerFixture):
         await self.message("Дашуль, помоги", chat=GROUP, sender={**USER, "id": 99})
         self.dialogue.reply.assert_awaited_once()
 
-    async def test_other_private_chats_groups_and_bot_senders_remain_blocked(
+    async def test_other_private_chats_inactive_groups_and_bot_senders_remain_blocked(
         self,
     ) -> None:
         for chat, sender in (

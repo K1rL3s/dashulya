@@ -20,7 +20,6 @@ services:
     environment:
       BOT_TOKEN: ${BOT_TOKEN:?Set BOT_TOKEN in .env}
       OWNER_USER_ID: ${OWNER_USER_ID:?Set OWNER_USER_ID in .env}
-      PUBLIC_GROUP_IDS: ${PUBLIC_GROUP_IDS:-}
       OWNER_AUTHOR_IDS: ${OWNER_AUTHOR_IDS:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env}
       KEENABLE_API_KEY: ${KEENABLE_API_KEY:-}

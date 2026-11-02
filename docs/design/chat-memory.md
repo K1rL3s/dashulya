@@ -52,61 +52,66 @@ factual corroboration. Source text is untrusted evidence, never instructions.
 `Dialogue` supplies the current request and its reply context without an automatic
 memory search. The agent chooses `search_memory` or `chat_history` when the request
 needs historical evidence. Casual conversation and reactions to supplied media
-can answer directly. Tool calls share the turn's trusted access scope, lock and
-90-second deadline. Private streams retain actual tool results; group streams
-are rebuilt for each request. Cancellation propagates through asynchronous SQL
+can answer directly. Tool calls share the turn's trusted access scope and
+five-minute deadline. Private streams retain actual tool results under their
+conversation lock; group streams are rebuilt for each request and generate
+concurrently. Group delivery and recording alone share a chat/topic lock.
+Cancellation propagates through asynchronous SQL
 and returns borrowed connections to the pool.
+
+Before starting a new private request, `Dialogue` repairs unanswered tool calls in
+the shared stream under the conversation lock. Interrupted calls receive an explicit result
+stating that the previous turn did not complete; completed results and earlier
+conversation history are preserved. Repair does not execute the tools again.
 
 `search_memory` accepts a short query or a returned memory/source ID, an optional
 author selector, timezone-aware ISO date bounds and up to eight hits.
 Recall combines BM25 with cosine-ranked `text-embedding-3-small` vectors at 512
-dimensions, fused by reciprocal rank with source diversity. Each block contains
-one original and up to two reply-parent hops. SQL applies trusted access, the
-request cutoff, chat selection, author and inclusive date bounds before loading
-candidate text or constructing blocks. A bounded recursive selection adds only
-the two saved parents needed for those blocks. Parents outside the primary
-filters supply block context without becoming candidates. BM25 corpus statistics
-and index coverage counts describe the filtered primary blocks; canonical
-coverage still describes the full authorized selected chat scope through SQL
-aggregates. Each chat's exact authorized primary block corpus gets a separate
-physical ParadeDB index with `k1=2.0`, `b=0.75`. Queries without author/date
-filters consider all authorized messages.
-Both retrieval inputs and returned
-sources remain inside the fixed access and cutoff. Primary author/date filters
-constrain supporting originals; separately labeled context can include other
-authors/dates within that same authorized snapshot.
+dimensions, fused by reciprocal rank with source diversity. Background indexing
+maintains persistent reply blocks with up to two parents in separate physical
+chat indexes, using `k1=2.0`, `b=0.75` and HNSW. BM25 corpus statistics describe
+the indexed chat; author/date filters do not rebuild a filtered corpus. The
+trusted cutoff and model filters still constrain candidates before LIMIT.
+[ADR 0009](../adr/0009-rank-persistent-search-documents-in-postgresql.md) records
+this trade-off and replaces the per-request snapshots from ADR 0008.
 
-After ranking, a separate bounded SQL selection retrieves up to five saved
-ancestors and the two nearest messages on each side within three minutes of
-each hit, in its own chat/topic. Recall does not load all originals to reconstruct
-that context. The immutable engine snapshot can serve concurrent searches;
-cache construction/invalidation and shutdown retain their resource locks,
-without serializing embedding waits across searches. Lexical preparation caches
-immutable native snapshots by chat, normalization/scorer version and all block
-content keys, including parent text. A changed parent, later edit, deletion or
-historical cutoff cannot reuse a stale block index. There are eight idle database
-snapshots and eight resident normalized snapshots; active database snapshots may
-temporarily exceed the limit. Transaction advisory locks protect each snapshot
-and nonblocking collection skips active queries. Failed/cancelled builds roll
-back their tables, indexes and journal. The runtime can create relations only in
-its derived schema; history-reader access to that schema is denied.
+A PostgreSQL trigger queues changed originals and their two-level reply
+dependents. The worker prepares bounded batches and reuses existing vectors.
+It creates missing full-block embeddings and attaches them to the derived
+index; it no longer reloads the entire corpus or invalidates every chat after
+a new message. Bulk initialization and ANN construction precede readiness.
+Pending revisions are immediately searchable through a bounded SQL lexical
+delta (128 anchors); stale index documents are excluded. Coverage exposes
+unindexed blocks, including any backlog beyond that bounded delta.
 
-Native indexes use whitespace tokenization over the existing Unicode61-normalized
-block text. Prefixes expand against the snapshot's uncapped resident vocabulary,
-then exact terms receive native BM25 scores.
-Owner-private lexical ranks from different chat indexes are merged with RRF,
-then combined with the dense ranking through the existing RRF and source
-diversity. First access to a new snapshot includes native index construction;
-unchanged blocks reuse resident normalized text. Warm native query measurements
-exclude that construction. No approximate vector index is added.
+Historical blocks use shorter variants when a saved parent's current version
+was edited after the trusted cutoff. Both lexical and dense selection apply
+variant eligibility before LIMIT, preventing later parent text from entering
+historical results. Unknown/deleted parents terminate the saved chain. Primary
+author/date filters constrain returned sources; separately labeled context may
+contain other authorized authors/dates.
 
-After candidate filtering, lexical preparation/BM25 and vector coverage/query
-embedding/dense ranking run concurrently. Fusion waits for both ordered rankings.
-An error or request cancellation cancels and joins the sibling before releasing
-the engine lease; the original error propagates. No query embedding is created
-when the filtered snapshot has no cached document vectors. The `rankings_ms`
-metric measures their shared wall time; individual branch stages overlap and
-must not be summed as elapsed time.
+Native BM25 and HNSW return at most 160 IDs per branch and chat. HNSW uses
+`ef_search=400` and relaxed iterative scanning, then reorders 2000 eligible
+internal candidates by their exact distances before returning 160 IDs. Native
+ranking forces custom prepared plans: generic plans can lose ParadeDB's
+score-producing custom scan and obscure filter selectivity. Query embedding
+runs alongside BM25. Whitespace indexes retain Unicode61-normalized text;
+native phrase-prefix queries expand in PostgreSQL rather than exporting the
+whole vocabulary. Owner-private lexical ranks from independent chat indexes
+merge by ordinal RRF, then combine with dense ranks. Source diversity uses
+source IDs before any original body is loaded into Python.
+
+Only the final eight hits cause original reads, including their indexed reply
+parents (at most 24 originals). A separate bounded SQL selection adds up to five
+ancestors and the two nearest messages on either side within three minutes.
+Canonical coverage aggregates run alongside retrieval; index coverage uses
+compact metadata maintained atomically with the derived documents and vectors,
+without exporting cache keys or vectors. No original
+corpus, text-based fingerprint, or corpus metadata engine is built per search.
+Native indexes are restricted to the separate derived schema, inaccessible to
+the model-facing SQL reader. Both branches cancel and join on failure;
+shutdown drains the whole retrieval lease, including evidence expansion.
 
 Hits carry canonical source IDs, originals, URLs and bounded reply/nearby
 context. Recall is bounded, and an empty result cannot prove absence or support
@@ -322,8 +327,10 @@ questions and captions take priority.
 
 Successfully delivered group and owner-private responses, including command
 responses, are recorded with Telegram-assigned IDs, send times and reply
-relationships. Split responses produce one original per delivered chunk. Rich
-responses retain source Markdown when Telegram supplies no ordinary text.
+relationships. Split responses produce one original per delivered chunk.
+Collapsed ordinary responses retain their full rendered text; the client-side
+preview does not truncate stored originals. Captured Rich responses without
+ordinary text retain generated HTML's text or source Markdown.
 
 PostgreSQL holds canonical `messages` and their collection metadata. Composite
 `(collection, message_id)` keys prevent collisions. Duplicates are idempotent,

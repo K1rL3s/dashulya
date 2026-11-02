@@ -74,7 +74,7 @@ layers =
     reactions | stickers
     images
     messages
-    formatting | media_frames | chat_actions
+    formatting | presentation | media_frames | chat_actions
 exhaustive = True
 
 [importlinter:contract:independent-domain]

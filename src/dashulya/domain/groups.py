@@ -21,6 +21,8 @@ class GroupRepository(Protocol):
 
     async def activate(self, chat_id: int) -> None: ...
 
+    async def deactivate(self, chat_id: int) -> None: ...
+
     async def is_active(self, chat_id: int) -> bool: ...
 
 
@@ -50,6 +52,9 @@ class GroupRegistry:
 
     async def activate(self, chat_id: int) -> None:
         await self._store.activate(chat_id)
+
+    async def deactivate(self, chat_id: int) -> None:
+        await self._store.deactivate(chat_id)
 
     async def is_active(self, chat_id: int) -> bool:
         return await self._store.is_active(chat_id)

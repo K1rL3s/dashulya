@@ -1,5 +1,8 @@
 # Unify chat memory in PostgreSQL with pgvector
 
+[ADR 0009](0009-rank-persistent-search-documents-in-postgresql.md) supersedes
+the exact vector scan below with per-chat HNSW and bounded database candidates.
+
 [ADR 0008](0008-use-chat-isolated-paradedb.md) supersedes this decision's SQL
 lexical scorer with chat-isolated ParadeDB snapshots. The canonical storage,
 embedding cache and access rules below remain in force.

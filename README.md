@@ -81,25 +81,32 @@ records the storage decision.
 | Command | What happens |
 | --- | --- |
 | `/start` | Meet Dashulya; activate replies in the current group |
+| `/stop` | Owner or chat admins pause replies in the current group; keep saving messages |
 | `/help` | See the available commands and how to use them |
 | `/groups` | List the groups she knows about |
 | `/clear` | Reset the current private conversation |
 
-Private conversations and commands are available only to the configured owner.
-Every group starts inactive. The owner must send `/start` (or
-`/start@<bot_username>`) in that group before Dashulya responds to any other
-commands or messages, including mentions and replies from the owner. Sending
+Private conversations and commands are available only to the configured owner,
+except group `/stop`, which is also available to that group's administrators.
+Every group starts inactive. The owner enables replies with `/start` (or
+`/start@<bot_username>`) in that group. While inactive, the owner can use `/start`
+and `/stop`; chat administrators can use `/stop`. Sending
 `/start` privately or in another group does not activate it. `/groups` shows each
 group's activation status. Activation survives restarts, name changes and
 supergroup migration; removing and re-adding the bot requires a new `/start`.
 Groups already known before this feature also start inactive after upgrading.
-Group tracking and message capture continue while replies are inactive.
+The owner or a chat administrator can pause replies in that group, across topics,
+with `/stop` or `/stop@<bot_username>`. Only the owner can resume with `/start`.
+`/stop` works only in group chats; repeating it confirms the pause.
+Group tracking, message capture and indexing continue while replies are inactive.
 
-In groups listed in `PUBLIC_GROUP_IDS`, all human participants may address the
-bot after activation; other groups retain owner-only access. Use comma-separated
-negative numeric group IDs; the default empty list keeps dialogue owner-only everywhere.
+Administrator rights are checked against Telegram's current list for that chat;
+failed checks deny access. Anonymous administrators can stop replies when Telegram's
+`sender_chat` matches the current group's numeric ID.
+
+In any group activated by the owner, all human participants may address the bot.
 Private messages, an explicit @mention of the bot, and replies to its messages
-start an AI conversation directly. Commands remain owner-only in enabled groups.
+start an AI conversation directly. Other commands remain owner-only in enabled groups.
 
 In groups, messages containing “Dashulya”, “Дашуля” or “Дашуль” in any letter case
 (including Russian case endings) first go through a separate AG2 decision agent using

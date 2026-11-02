@@ -17,7 +17,7 @@ previously stored reply threads. Only real forum-topic messages narrow that
 window to a topic: a raw Telegram `message_thread_id` alone does not establish
 one. Use `is_topic_message` to identify a topic; a forum's General topic is 1
 when Telegram omits the thread ID. Share this conversation identity between
-capture, addressing, reply context and turn locks.
+capture, addressing, reply context and delivery locks.
 
 For each selected message, follow at most five reply-parent
 edges within that chat/topic. Deduplicate by message identity and order the union
@@ -116,6 +116,13 @@ Explicit allowed IDs on later outputs can address another participant.
 Send the messages in
 order, using each chosen target for every chunk of that message, and record
 each actual reply relationship. Long messages retain Telegram-length chunking.
+The application applies the
+[delivery disclosure policy](../design/bot-behavior.md#conversation-context-and-delivery)
+after generation, independently of model markup. All chunks use ordinary
+messages with explicit entities; long replies add a native
+`expandable_blockquote`. Live comparison of Rich HTML, Rich Markdown and explicit
+Rich blocks showed the same heavier font in the user's client, while an ordinary
+collapsible quotation preserved the expected font and code formatting.
 Keep the delivery lock through the entire batch; a send failure stops remaining
 delivery without retrying already attempted chunks.
 
@@ -148,9 +155,13 @@ in this request's selected context; a source already supplied by the update is
 not downloaded again. Known oversized files are not downloaded. Oversized or
 unavailable saved images produce explicit omission notes; one stale reference
 does not suppress the whole reply. Other older media and records captured before
-file references were stored remain placeholders. Serialize generation, Telegram
-delivery and recording within each conversation so a subsequent turn cannot
-overtake an unfinished delivery.
+file references were stored remain placeholders. Group requests generate replies
+concurrently, each with its own stream, context snapshot, tool state and trusted
+memory access. A slow request must not hold up another participant's generation.
+Serialize only Telegram delivery and recording of each complete reply batch within
+the chat/topic. Ready replies may overtake slower generations, but their messages
+and chunks stay together through persistence. Private conversations retain
+serialization across generation, delivery and recording because they share history.
 
 The selection contains at most 120 unique messages, including the request; depth
 and count do not impose a token limit. Newer messages are excluded from a request's

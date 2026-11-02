@@ -2,13 +2,9 @@
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
 from contextlib import suppress
 
-from dashulya.domain.memory import MemoryAccess
-from dashulya.memory.history import CanonicalHistory
-from dashulya.memory.hybrid import embedding_texts, lexical_documents
-from dashulya.memory.lexical import LexicalIndex
+from dashulya.memory.search_index import SearchIndex
 from dashulya.memory.store import MessageStore
 from dashulya.memory.vectors import EmbeddingCache
 
@@ -20,28 +16,22 @@ class IndexingWorker:
         self,
         store: MessageStore,
         vectors: EmbeddingCache,
-        lexical: LexicalIndex,
+        index: SearchIndex,
         *,
         owner_user_id: int,
-        on_prepared: Callable[[], Awaitable[None]],
     ) -> None:
         self.store = store
         self.vectors = vectors
-        self.lexical = lexical
-        self._history = CanonicalHistory(
-            store, MemoryAccess(owner_user_id, is_private=True)
-        )
-        self._on_prepared = on_prepared
+        self.index = index
         self._worker: asyncio.Task[None] | None = None
         self._needs_refresh = True
 
     async def refresh_once(self) -> None:
         pending = await self.store.pending(limit=None)
-        originals = await self._history.originals()
-        texts = await asyncio.to_thread(embedding_texts, originals)
-        await self.lexical.prepare(await asyncio.to_thread(lexical_documents, originals))
-        await self.vectors.vectors(texts, load_vectors=False)
-        await self._on_prepared()
+        while await self.index.prepare():
+            pass
+        await self.index.finish()
+        await self.index.embed_pending()
         # A newer edit cannot be acknowledged by an older embedding batch.
         await self.store.indexed(pending)
         self._needs_refresh = False
@@ -58,7 +48,11 @@ class IndexingWorker:
         while True:
             await asyncio.sleep(2)
             try:
-                if self._needs_refresh or await self.store.pending(limit=1):
+                if (
+                    self._needs_refresh
+                    or await self.store.pending(limit=1)
+                    or await self.index.has_pending()
+                ):
                     await self.refresh_once()
             except Exception as error:
                 # Provider text may contain source data or credentials.

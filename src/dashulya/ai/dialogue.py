@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
@@ -16,6 +16,7 @@ from ag2.events import (
     TextInput,
     ToolResultEvent,
 )
+from ag2.history import close_unanswered_tool_calls, unanswered_tool_calls
 from pydantic import ValidationError
 
 from dashulya.ai.message_format import (
@@ -80,7 +81,7 @@ class Dialogue:
 
     @asynccontextmanager
     async def delivery(self, key: ConversationKey) -> AsyncGenerator[None, None]:
-        # Keep the next reply behind persistence of the preceding Telegram delivery.
+        # Keep each Telegram reply batch together through persistence.
         async with self._conversation(key).delivery_lock:
             yield
 
@@ -314,7 +315,8 @@ class Dialogue:
             user_id=request.user_id,
             user_name=request.user_name,
         )
-        async with self._conversation(key).lock:
+        # Group streams belong to individual requests; only private history is shared.
+        async with self._conversation(key).lock if key[0] >= 0 else nullcontext():
             stream = self._conversation(key).stream
             selected: tuple[MemoryMessage, ...] = ()
             allowed_reply_ids: set[int] = set()
@@ -354,7 +356,19 @@ class Dialogue:
                 stream,
                 sum(len(part.data) for part in inputs if isinstance(part, BinaryInput)),
             )
-            async with asyncio.timeout(90):
+            if unanswered_tool_calls(list(await stream.history.get_events())):
+                await close_unanswered_tool_calls(
+                    stream.history,
+                    result="This tool call was not completed because the previous turn was interrupted. No result is available.",
+                )
+                logger.warning(
+                    "AI conversation repaired",
+                    extra={
+                        "chat_id": key[0],
+                        "message_id": message_id,
+                    },
+                )
+            async with asyncio.timeout(300):
                 access = MemoryAccess(
                     chat_id=key[0],
                     is_private=key[0] > 0,

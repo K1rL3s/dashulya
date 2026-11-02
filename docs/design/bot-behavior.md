@@ -2,19 +2,33 @@
 
 ## Access and activation
 
-Authorize private messages and commands using the actual sender's numeric
-`from_user.id == OWNER_USER_ID`. Forwarded identities and authorship bindings
-grant no access. Silently ignore bot senders, missing senders and unauthorized
-users before command execution or model invocation.
+Authorize private messages, `/start` and other owner commands using the actual
+sender's numeric `from_user.id == OWNER_USER_ID`. Forwarded identities and
+authorship bindings grant no access. Group `/stop` is also available to the current chat's creator
+and administrators, checked with `getChatAdministrators` for that chat on each
+request. A failed or timed-out lookup denies access and logs a redacted failure;
+the configured owner's commands do not depend on this lookup.
 
-After activation, human participants may invoke group dialogue in
-`PUBLIC_GROUP_IDS`; the owner retains access to other groups. Addressing rules
-still apply. Group commands remain owner-only.
+Anonymous administrators may use `/stop` only when Telegram's authenticated
+`sender_chat.id` equals the current group's numeric ID. A forwarded identity or
+another sender chat grants no authority. Other bot senders, missing senders and
+unauthorized users are silently ignored before command execution or model
+invocation.
+
+After the owner activates a group, all human participants may invoke group
+dialogue there. Addressing rules still apply. Other group commands remain
+owner-only.
 
 Every group starts inactive, including existing groups on upgrade. Only the
-actual human owner's `/start` in that group activates replies. Until then, all
-other commands, addressing decisions and reply generation remain silent,
-including the owner's. Activation preserves participant access rules.
+actual human owner's `/start` in that group activates replies. The bot owner or a
+chat administrator can use `/stop` to pause replies throughout the current group,
+across topics. The command confirms the pause even if the group is already
+inactive. `/stop` is group-only; `/start`
+resumes group dialogue. Both activation and deactivation persist across restarts.
+While inactive, the owner may use `/start` and `/stop`, and chat administrators
+may use `/stop`; other commands, addressing decisions and reply generation remain
+silent, including the owner's. Activation grants group dialogue access to all
+human participants.
 
 ## Routing and capture
 
@@ -37,9 +51,11 @@ edits and worker recovery follow the
 Reuse one AG2 `Agent`. Follow
 [ADR 0002](../adr/0002-rebuild-group-reply-context.md) for group context selection,
 roles, incremental author/date declarations, media and ordered reply targets.
-Private histories remain in memory until restart or `/clear`. Serialize
-generation, delivery and recording within a conversation while allowing other
-conversations to progress.
+Private histories remain in memory until restart or `/clear`. Serialize private
+generation, delivery and recording within a conversation. Group requests generate
+concurrently in separate streams; serialize only sending and recording of each
+complete reply batch within its chat/topic. Ready group replies may overtake slow
+generations, while messages from different batches cannot interleave.
 
 Carry original Telegram `message.date` in `BOT_TIMEZONE`. Both agents' system
 prompts declare the IANA timezone; user context omits that declaration. Private
@@ -47,11 +63,24 @@ inputs use `DD Month YYYY (Weekday) HH:MM:SS`, adding a numeric UTC offset durin
 repeated local hours. Compute the weekday after conversion and preserve offset
 changes. Interpret relative dates using send time, including delayed messages.
 
-Render Markdown into ordinary Telegram messages with explicit entities using
-the slop-writer-based renderer in
+Render Markdown using the slop-writer-based renderer in
 [`bot/formatting.py`](../../src/dashulya/bot/formatting.py). Preserve formatting
-and UTF-16 offsets when chunking; tables become monospace blocks. Keep the
-typing indicator and Telegram-length limits. Attempt each chunk once, including
+and UTF-16 offsets when chunking; tables become monospace blocks. All replies
+use ordinary Telegram messages with explicit entities. The application marks
+each reply with more than 600 rendered Unicode characters, or any code block or
+table, with an `expandable_blockquote` spanning its body. This policy does not
+depend on model markup. Keep the first prose paragraph outside that span only
+when it has at most 240 characters and two lines and other paragraphs follow.
+Headings, lists and quotes stay inside. Every continuation chunk is marked for
+collapse, including short final chunks. Telegram controls the visible preview
+and expansion arrow; do not add a separate disclosure title or padding.
+
+Preserve text, links, authored emphasis, inline code and preformatted languages
+inside the collapsible span. Telegram cannot nest quotations, so render inner
+quoted passages as italic spans instead. Preserve all UTF-16 offsets and the full
+rendered text in recorded history. Use the ordinary message renderer to avoid
+the heavier default font observed for Rich Messages in the user's client.
+Keep the typing indicator and Telegram-length limits. Attempt each chunk once, including
 after ambiguous network errors. Keep provider errors and credentials out of
 logs and replies. The Jester persona and response instructions live in
 [`ai/prompts.py`](../../src/dashulya/ai/prompts.py).
@@ -61,6 +90,12 @@ logs and replies. The Jester persona and response instructions live in
 Preserve observed groups across restarts, refresh names, remove departed groups
 and replace old IDs on supergroup migration. Telegram supplies no complete chat
 list; missed updates during downtime can leave the registry stale.
+
+Treat both absent `my_chat_member` status and a service message whose
+`left_chat_member.id` is this bot's ID as departure. The service message must
+remove the group rather than re-register it, regardless of which event arrives
+first or who removed the bot. Another participant's departure preserves this
+bot's group membership and activation.
 
 Preserve activation across restarts, metadata refresh and migration. Departure
 removes activation, so rejoining requires a new owner `/start`. `/groups` shows

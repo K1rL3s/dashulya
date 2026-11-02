@@ -7,11 +7,32 @@ from psycopg import sql
 
 from dashulya.domain.memory import MemoryInputError, OriginalMessage
 from dashulya.memory._scope import VISIBLE_MESSAGES, scope_parameters
-from dashulya.memory.history import CanonicalHistory, _date
+from dashulya.memory.history import CanonicalHistory
 from dashulya.memory.store import original
 
 
 class RecallSelection:
+    async def selected(
+        self, keys: list[tuple[str, int]], *, chat: str | None
+    ) -> list[OriginalMessage]:
+        """Load original bodies only after final candidate selection."""
+        if not keys:
+            return []
+        async with self.database.connection() as connection:
+            cursor = await connection.execute(
+                sql.SQL("WITH visible AS NOT MATERIALIZED (")
+                + VISIBLE_MESSAGES
+                + sql.SQL(
+                    ") SELECT m.* FROM visible m JOIN unnest(%(collections)s::text[],%(ids)s::bigint[]) AS k(collection,message_id) USING(collection,message_id) ORDER BY m.sent_at NULLS FIRST,m.collection,m.message_id"
+                ),
+                {
+                    **scope_parameters(self.history.access, chat),
+                    "collections": [key[0] for key in keys],
+                    "ids": [key[1] for key in keys],
+                },
+            )
+            return [original(row) for row in await cursor.fetchall()]
+
     def __init__(self, history: CanonicalHistory) -> None:
         self.history = history
         self.database = history.store.database
@@ -53,72 +74,6 @@ class RecallSelection:
                 for period in periods
             ],
         }
-
-    async def originals(
-        self,
-        *,
-        chat: str | None,
-        author_id: int | None,
-        after: str | None,
-        before: str | None,
-    ) -> tuple[list[OriginalMessage], frozenset[str]]:
-        self.history._chat(chat)
-        lower, upper = _date(after), _date(before)
-        if lower is not None and upper is not None and lower > upper:
-            error_message = "after must not be later than before."
-            raise MemoryInputError(error_message)
-        query = (
-            sql.SQL("WITH RECURSIVE visible AS NOT MATERIALIZED (")
-            + VISIBLE_MESSAGES
-            + sql.SQL("""
-        ), anchors AS MATERIALIZED (
-            SELECT collection,message_id FROM visible
-            WHERE (%(author_id)s::bigint IS NULL OR author_id=%(author_id)s)
-            AND (%(after)s::timestamptz IS NULL OR sent_at>=%(after)s)
-            AND (%(before)s::timestamptz IS NULL OR sent_at<=%(before)s)
-        ), parents AS (
-            SELECT m.collection,m.message_id,m.reply_to_id,m.sent_at,0 AS depth
-            FROM visible m JOIN anchors a USING(collection,message_id)
-            UNION ALL
-            SELECT p.collection,p.message_id,p.reply_to_id,p.sent_at,c.depth+1
-            FROM visible p JOIN parents c ON p.collection=c.collection
-                AND p.message_id=c.reply_to_id
-            WHERE c.depth<2 AND p.sent_at IS NOT NULL AND c.sent_at IS NOT NULL
-                AND (p.sent_at,p.message_id)<=(c.sent_at,c.message_id)
-                AND p.message_id<>c.message_id
-        ), selected AS (
-            SELECT DISTINCT collection,message_id FROM parents
-        ) SELECT m.*,a.message_id IS NOT NULL AS is_primary FROM visible m
-            JOIN selected s USING(collection,message_id)
-            LEFT JOIN anchors a USING(collection,message_id)
-        ORDER BY m.sent_at NULLS FIRST,m.collection,m.message_id
-        """)
-        )
-        if author_id is None and lower is None and upper is None:
-            query = (
-                sql.SQL("WITH visible AS NOT MATERIALIZED (")
-                + VISIBLE_MESSAGES
-                + sql.SQL(
-                    ") SELECT m.*,true AS is_primary FROM visible m ORDER BY m.sent_at NULLS FIRST,m.collection,m.message_id"
-                )
-            )
-        async with self.database.connection() as connection:
-            cursor = await connection.execute(
-                query,
-                {
-                    **scope_parameters(self.history.access, chat),
-                    "author_id": author_id,
-                    "after": lower,
-                    "before": upper,
-                },
-            )
-            rows = await cursor.fetchall()
-        messages = [original(row) for row in rows]
-        return messages, frozenset(
-            message.source_id
-            for message, row in zip(messages, rows, strict=True)
-            if row["is_primary"]
-        )
 
     async def context(
         self, targets: Sequence[OriginalMessage], *, chat: str | None

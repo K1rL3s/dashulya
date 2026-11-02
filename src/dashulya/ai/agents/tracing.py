@@ -24,7 +24,6 @@ from ag2.middleware.base import BaseMiddleware, LLMCall, ToolExecution, ToolResu
 from fast_depends import inject
 from pydantic import ValidationError
 
-from dashulya.ai.tools.web import WebInputError
 from dashulya.domain.memory import MemoryAccess, MemoryInputError
 from dashulya.observability import exception_fields
 
@@ -192,7 +191,7 @@ class ReplyTrace(BaseMiddleware):
                 extra=_outcome_fields(started, fields, "cancelled"),
             )
             raise
-        except (MemoryInputError, ValidationError, WebInputError) as error:
+        except (MemoryInputError, ValidationError) as error:
             logger.warning(
                 "AI tool call completed",
                 extra={
@@ -215,9 +214,7 @@ class ReplyTrace(BaseMiddleware):
                 **_outcome_fields(started, fields, "error"),
                 **exception_fields(result.error),
             }
-            if isinstance(
-                result.error, (MemoryInputError, ValidationError, WebInputError)
-            ):
+            if isinstance(result.error, (MemoryInputError, ValidationError)):
                 logger.warning("AI tool call completed", extra=extra)
             else:
                 logger.error("AI tool call completed", extra=extra)

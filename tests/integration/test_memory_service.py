@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
+from psycopg.errors import FeatureNotSupported
 
 from dashulya.database import Database
 from dashulya.domain.memory import MemoryAccess, MemoryMessage, OriginalMessage
@@ -22,6 +24,68 @@ NOW = datetime(2026, 10, 25, tzinfo=UTC)
 
 @pytest.mark.usefixtures("_setup")
 class TestMemoryService:
+    async def test_dense_recall_remains_available_without_lexical_query_terms(
+        self,
+    ) -> None:
+        await self.live.record(self.message(-1001, "Aurora semantic evidence"))
+        await self.service.refresh_once()
+        result = await self.service.recall(MemoryAccess(-1001, False)).search("what")
+        assert [hit["sources"][0]["text"] for hit in result["hits"]] == [
+            "Aurora semantic evidence"
+        ]
+
+    async def test_search_remains_usable_with_generic_prepared_plans(
+        self, database_url: str
+    ) -> None:
+        options = str(conninfo_to_dict(database_url).get("options") or "")
+        database = Database(
+            make_conninfo(
+                database_url, options=options + " -c plan_cache_mode=force_generic_plan"
+            )
+        )
+        self.cleanup.push_async_callback(database.close)
+        store = MessageStore(database)
+        memory = HybridChatMemory(
+            store, EmbeddingCache(database, self.embed), owner_user_id=42
+        )
+        self.cleanup.push_async_callback(memory.close)
+        await store.record(self.message(-1001, "Aurora prepared search"))
+        await memory.refresh_once()
+        try:
+            result = await memory.recall(MemoryAccess(-1001, False)).search("Aurora")
+        except FeatureNotSupported:
+            result = None
+        assert result is not None, "Generic prepared plans broke native BM25 retrieval"
+        assert result["hits"][0]["sources"][0]["text"] == "Aurora prepared search"
+
+    @pytest.mark.parametrize("edited", [False, True])
+    async def test_search_loads_only_bounded_database_candidates(
+        self, caplog: pytest.LogCaptureFixture, edited: bool
+    ) -> None:
+        for number in range(1, 401):
+            await self.live.record(
+                self.message(-1001, f"Aurora decision {number}", number=number)
+            )
+        await self.service.refresh_once()
+        if edited:
+            await self.live.record(
+                replace(
+                    self.message(-1001, "Aurora revised decision", number=201),
+                    edited_at=NOW + timedelta(minutes=1),
+                    update_id=2,
+                )
+            )
+        with caplog.at_level("INFO", logger="dashulya.memory._timing"):
+            result = await self.service.recall(MemoryAccess(-1001, False)).search(
+                "Aurora"
+            )
+        assert result["hits"]
+        assert result["coverage"]["source_count"] == 400
+        record = next(r for r in caplog.records if r.message == "Memory search completed")
+        assert vars(record)["search_metrics"]["loaded_originals"] <= 24, (
+            "Recall loaded the corpus instead of bounded database candidates"
+        )
+
     @pytest.fixture
     async def _setup(self, database: Database, cleanup: AsyncExitStack) -> None:
         self.database = database

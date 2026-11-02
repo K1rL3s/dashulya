@@ -169,28 +169,60 @@ class TestWebSearch:
         )
         assert all(client.is_closed for client in self.clients)
 
-    async def test_model_cannot_override_provider_limits_or_mutate_history(self) -> None:
-        original = {
-            "query": "public facts",
-            "max_results": 100,
-            "snippet_max_length": 100_000,
-            "output_format": "text",
-            "unexpected": "PRIVATE CONTEXT",
-        }
-        call = ToolCallEvent("search_web_pages", arguments=json.dumps(original))
-        agent = await self.agent(TestConfig(call, reply_json("Done")))
+    @pytest.mark.parametrize(
+        ("name", "original"),
+        [
+            pytest.param(
+                "search_web_pages",
+                {
+                    "query": "public facts",
+                    "site": "",
+                    "published_after": "",
+                    "acquired_after": "2026-10-01",
+                    "query_time": "7d",
+                    "mode": "realtime",
+                    "enable_wizards": False,
+                    "session_id": "test-session",
+                    "max_results": 7,
+                    "snippet_max_length": 8_000,
+                    "output_format": "text",
+                },
+                id="search",
+            ),
+            pytest.param(
+                "fetch_page_content",
+                {
+                    "url": "https://example.com",
+                    "prompt": "List the pricing tiers.",
+                    "session_id": "test-session",
+                    "live": True,
+                    "max_chars": 24_000,
+                    "output_format": "text",
+                },
+                id="page",
+            ),
+        ],
+    )
+    async def test_model_options_reach_keenable_without_mutating_history(
+        self, name: str, original: dict[str, Any]
+    ) -> None:
+        call = ToolCallEvent(name, arguments=json.dumps(original))
+        agent = await self.agent(
+            TestConfig(call, reply_json("Done"), raise_tool_errors=False)
+        )
 
         def respond(request: httpx.Request) -> httpx.Response:
             self.requests.append(request)
-            return httpx.Response(200, json={"results": []})
+            return httpx.Response(
+                200, json={"results": [], "url": "https://example.com", "content": ""}
+            )
 
         stream = MemoryStream()
         with self.transport(respond):
             await agent.ask("Find", stream=stream)
+        assert len(self.requests) == 1, "Model arguments never reached Keenable"
         assert json.loads(self.requests[0].content)["params"]["arguments"] == {
-            "query": "public facts",
-            "max_results": 5,
-            "snippet_max_length": SEARCH_TEXT_CHARACTERS,
+            **original,
             "output_format": "json",
         }
         recorded = next(
@@ -587,102 +619,58 @@ class TestWebSearch:
         assert len(self.requests) == 1
         assert self.clients[-1].is_closed
 
-    async def test_request_limits_reject_inputs_before_calling_keenable(
-        self, subtests: pytest.Subtests, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        calls = [
-            ToolCallEvent("search_web_pages", arguments='{"query":" "}'),
-            ToolCallEvent(
-                "search_web_pages", arguments=json.dumps({"query": "x" * 2001})
-            ),
-            ToolCallEvent("search_web_pages", arguments='{"query":"x","site":" "}'),
-            ToolCallEvent("fetch_page_content", arguments='{"url":""}'),
-            ToolCallEvent(
-                "fetch_page_content",
-                arguments=json.dumps({"url": "https://example.com/" + "x" * 2029}),
-            ),
-            ToolCallEvent("fetch_page_content", arguments='{"url":"file:///etc/passwd"}'),
-            ToolCallEvent(
-                "fetch_page_content",
-                arguments='{"url":"https://user:password@example.com"}',  # pragma: allowlist secret -- Synthetic URL credentials.
-            ),
-            ToolCallEvent(
-                "fetch_page_content",
-                arguments='{"url":"https://example.com","live":"yes"}',
-            ),
-        ]
-        for call in calls:
-            with subtests.test(call=call):
-                caplog.clear()
-                agent = await self.agent(
-                    TestConfig(
-                        call, reply_json("Invalid input."), raise_tool_errors=False
-                    )
-                )
-                stream = MemoryStream()
-                self.requests.clear()
-                with self.transport(
-                    lambda _: pytest.fail("Invalid arguments reached Keenable")
-                ):
-                    await agent.ask("Find", stream=stream)
-                assert isinstance((await self.results(stream))[0], ToolErrorEvent)
-                (failure,) = [
-                    record
-                    for record in caplog.records
-                    if record.name == "dashulya.ai.agents.tracing"
-                    and getattr(record, "tool_call_id", None) == call.id
-                ]
-                assert failure.levelname == "WARNING"
-                assert getattr(failure, "error_type", None) == "WebInputError"
-
-    async def test_legal_input_boundaries_reach_the_keenable_transport(
+    async def test_keenable_decides_argument_validity(
         self, subtests: pytest.Subtests
     ) -> None:
-        url = "https://example.com/"
-        cases = (
-            ("search_web_pages", {"query": "x"}),
-            ("search_web_pages", {"query": "x" * 2000}),
-            ("fetch_page_content", {"url": url}),
+        cases: tuple[tuple[str, dict[str, Any]], ...] = (
+            ("search_web_pages", {"query": " "}),
+            ("search_web_pages", {"query": "x" * 2001}),
+            ("search_web_pages", {"query": "x", "site": " "}),
+            ("search_web_pages", {}),
+            ("fetch_page_content", {"url": ""}),
+            ("fetch_page_content", {"url": "https://example.com/" + "x" * 2029}),
+            ("fetch_page_content", {"url": "file:///etc/passwd"}),
             (
-                "search_web_pages",
+                "fetch_page_content",
                 {
-                    "query": "x",
-                    "site": "example.com",
-                    "published_after": "7d",
-                    "published_before": "2026-10-31",
+                    "url": "https://user:password@example.com",  # pragma: allowlist secret -- Synthetic URL credentials.
                 },
             ),
-            ("fetch_page_content", {"url": url + "x" * 2028}),
+            ("fetch_page_content", {"url": "https://example.com", "live": "yes"}),
+            ("fetch_page_content", {}),
         )
         for name, arguments in cases:
             with subtests.test(name=name, arguments=arguments):
-                requests: list[httpx.Request] = []
+                self.requests.clear()
 
-                def respond(
-                    request: httpx.Request, requests: list[httpx.Request] = requests
-                ) -> httpx.Response:
-                    requests.append(request)
+                def respond(request: httpx.Request) -> httpx.Response:
+                    self.requests.append(request)
                     return httpx.Response(
-                        200, json={"results": [], "url": url, "content": ""}
+                        200,
+                        json={
+                            "isError": True,
+                            "content": [{"type": "text", "text": "invalid_arguments"}],
+                        },
                     )
 
                 agent = await self.agent(
                     TestConfig(
                         ToolCallEvent(name, arguments=json.dumps(arguments)),
-                        reply_json("No matches."),
+                        reply_json("Unable to verify."),
                         raise_tool_errors=False,
                     )
                 )
                 stream = MemoryStream()
-                with self.transport(respond):
+                with self.transport(respond, raw_result=True):
                     await agent.ask("Find", stream=stream)
-                assert len(requests) == 1
-                assert json.loads(requests[0].content)["params"][
+                assert len(self.requests) == 1, "Argument validation bypassed Keenable"
+                assert json.loads(self.requests[0].content)["params"][
                     "arguments"
-                ] == IsPartialDict(**arguments)
+                ] == IsPartialDict(**arguments, output_format="json")
                 results = await self.results(stream)
                 assert len(results) == 1
-                assert not isinstance(results[0], ToolErrorEvent)
+                assert isinstance(results[0], ToolErrorEvent)
+                assert "Web lookup failed" in repr(results)
 
     @pytest.mark.parametrize("during_discovery", [False, True])
     async def test_timeout_and_cancellation_close_the_mcp_client(

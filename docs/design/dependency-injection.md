@@ -54,18 +54,17 @@ records the storage decision. `ChatMemoryService` binds trusted `MemoryAccess`
 to separate recall and canonical readers for each AG2 session.
 
 `MemoryProvider` shares the store and persistent `EmbeddingCache`, and owns the
-OpenAI embedding client. `HybridChatMemory` assembles three internal modules:
-`IndexingWorker` owns preparation and retries, `EngineCache` owns bounded metadata engines and retrieval
-leases, and `ScopedRecall` reads and renders one authorized snapshot. Preparation
-announces completed batches to invalidate cached engines without depending on
-retrieval internals. Canonical history remains independent of indexing.
-Startup attempts preparation; provider failures retain queued work. Finalization
-cancels/joins the worker first, then drains active retrieval leases before the
-client and database pool close. Completed batches and pending revisions survive
-restarts. SQL operations use async pooled connections; only
-metadata construction runs in CPU threads. Ranking uses native
-pgvector and ParadeDB BM25, then bounded RRF in Python. Cancelled SQL returns its
-connection safely to the pool.
+OpenAI embedding client. `HybridChatMemory` owns an incremental `SearchIndex`,
+its background `IndexingWorker`, and scope-bound `ScopedRecall` readers. The
+worker consumes database revisions and updates only changed reply blocks.
+Persistent per-chat ParadeDB and HNSW indexes select bounded IDs in PostgreSQL;
+`IndexedSearch` fuses rankings and source identities before `ScopedRecall` loads
+original bodies and supporting context. A bounded SQL delta keeps pending edits
+searchable without exporting their texts to Python. Canonical history remains
+independent of indexing. `prepare_cached()` supports offline snapshots without
+creating historical embeddings. Startup prepares pending revisions before
+readiness; finalization cancels the worker and drains active searches before
+closing shared clients and the pool. Provider failures retain queued work.
 
 `AgentProvider` supplies the same store and an application-scoped `MessageFormatter`
 to `Dialogue` and the memory tools. It also injects `ContextImages`, an alias of
@@ -93,14 +92,21 @@ Incoming/outgoing capture share conversion in `bot/messages.py`. Group messages
 from all participants, owner-private messages and successful deliveries use
 actual Telegram IDs; other private senders are excluded. `TelegramProvider`
 attaches outgoing capture to the shared bot session.
-It supplies `AccessMiddleware` with the owner ID and explicit `PUBLIC_GROUP_IDS`.
-Private messages and commands stay owner-only. Human participants in those
-groups may proceed to normal addressing; bot/missing senders and unauthorized
-chats remain silent. Capture and group tracking still precede this gate. The
-allowlist grants dialogue access only and does not expand memory authority.
+It supplies `AccessMiddleware` with the owner ID and `GroupRegistry`.
+Private messages, activation and other commands stay owner-only. `/stop` also
+admits the current chat's administrators, verified through the event's Telegram
+bot using `getChatAdministrators`. Failed lookups deny access; named administrator
+rights are not cached. Telegram's authenticated `sender_chat` for the current
+group allows anonymous administrators to stop replies without granting `/start`.
+Human participants in any
+activated group may proceed to normal addressing; bot/missing senders and
+unauthorized private chats remain silent. Capture and group tracking still
+precede this gate. Activation grants dialogue access within the group without
+expanding memory authority.
 The same gate checks group activation through `GroupRegistry`; inactive groups
-admit only the human owner's `/start`, which activates the group in PostgreSQL
-before confirming it. Ordinary observations preserve activation, migration
+admit the human owner's `/start` and owner/admin `/stop`. These commands persist the
+current group's activation or deactivation in PostgreSQL before confirming it.
+Ordinary observations preserve activation, migration
 transfers it, and departure removes it with the registry entry.
 
 AI factories accept ordinary arguments; tools declare injected dependencies
@@ -198,11 +204,15 @@ MCP session and HTTP client cleanup; the addressing agent has no web tools.
 Discovery has a 30-second deadline. A discovery failure logs safe diagnostics
 and omits web tools from that reply; a later turn can discover them again.
 Calls explicitly request `output_format=json` instead of the server's default
-formatted text. Middleware overrides model-supplied provider controls, keeping
-search to five bounded snippets and page reading to one URL and 12000 characters.
-Page reading defaults to indexed content, with explicit `live=true` for current
-or unindexed pages. The middleware validates inputs, bounds content and call
-duration, wraps evidence as untrusted web input, sanitizes provider failures
+formatted text. All model-supplied arguments otherwise pass through to Keenable,
+which owns input validation; no local parameter allowlist or validation rules
+duplicate its discovered schemas. When omitted, request defaults select five
+search results, 4000-character snippets and 12000-character page content. Explicit
+model options take precedence. Page reading defaults to indexed content, with
+explicit `live=true` for current or unindexed pages. Regardless of provider
+options, model-facing results retain at most five bounded snippets or 12000
+characters of page content. The middleware bounds content and call duration,
+wraps evidence as untrusted web input, sanitizes provider failures
 before they enter AG2 history, and propagates cancellation. AG2 exposes MCP
 rejections as string errors; diagnostic extraction retains only recognized
 code/status hints, with unknown formats left unclassified. Raw provider errors
@@ -304,9 +314,12 @@ are not prerequisites for agent construction.
 deadlines, and serialization with `/clear`. Private streams and conversation
 locks stay together across Telegram events; group streams are rebuilt per
 request under [the reply-context ADR](../adr/0002-rebuild-group-reply-context.md).
-The delivery boundary holds a conversation's delivery lock through generation,
-Telegram sending and local recording; the model lock also protects direct
+Private delivery holds a conversation's delivery lock through generation,
+Telegram sending and local recording; the model lock also protects direct private
 dialogue calls and private history reads. `/clear` acquires both in that order.
+Group streams generate concurrently without a model lock. Their delivery boundary
+acquires the chat/topic delivery lock only for sending and recording a complete
+ready reply batch, so a slow generation cannot queue other participants' requests.
 These are not request dependencies. AG2's explicit conversation scope is not
 needed here.
 

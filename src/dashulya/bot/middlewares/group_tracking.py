@@ -23,13 +23,20 @@ class TrackGroupsMiddleware(BaseMiddleware):
         # This middleware is registered on the message observer.
         assert isinstance(event, Message)
         if event.chat.type in GROUP_TYPES:
-            await self._groups.observe(
-                Group(
-                    event.chat.id,
-                    event.chat.title or "Untitled group",
-                    event.chat.username,
-                ),
-                migrated_to=event.migrate_to_chat_id,
-                migrated_from=event.migrate_from_chat_id,
+            group = Group(
+                event.chat.id,
+                event.chat.title or "Untitled group",
+                event.chat.username,
             )
+            if (
+                event.left_chat_member is not None
+                and event.left_chat_member.id == data["bot"].id
+            ):
+                await self._groups.membership(group, present=False)
+            else:
+                await self._groups.observe(
+                    group,
+                    migrated_to=event.migrate_to_chat_id,
+                    migrated_from=event.migrate_from_chat_id,
+                )
         return await handler(event, data)

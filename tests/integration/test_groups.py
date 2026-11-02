@@ -169,6 +169,50 @@ class TestGroupTracking:
                 await self.membership()
                 assert await self.groups.list_groups() == [Group(-123, "Test group")]
 
+    @pytest.mark.parametrize("chat_type", ["group", "supergroup"])
+    @pytest.mark.parametrize("membership_first", [True, False])
+    async def test_own_departure_service_message_does_not_restore_a_removed_group(
+        self, chat_type: str, membership_first: bool
+    ) -> None:
+        chat = {**GROUP_CHAT, "type": chat_type}
+        await self.membership(chat=chat)
+        await self.message("/start", chat=chat)
+        if membership_first:
+            await self.membership("kicked", chat=chat, until_date=0)
+        await self.message(
+            chat=chat,
+            left_chat_member=BOT_USER,
+            **cast("dict[str, Any]", {"from": {**USER, "id": 99}}),
+        )
+        if not membership_first:
+            await self.membership("kicked", chat=chat, until_date=0)
+        await self.message("/groups")
+        assert "I don't know of any groups yet" in self.last_reply()
+        await self.membership(chat=chat)
+        await self.message("/groups")
+        assert "🔴 Test group (ID: -123)" in self.last_reply()
+        assert "— inactive (send /start there)" in self.last_reply()
+
+    @pytest.mark.parametrize(
+        ("departed", "expected"),
+        [
+            (BOT_USER, "I don't know of any groups yet"),
+            (USER, "🟢 Test group (ID: -123) — active"),
+            ({**BOT_USER, "id": 987654321}, "🟢 Test group (ID: -123) — active"),
+        ],
+    )
+    async def test_departure_service_without_membership_update_removes_only_this_bot(
+        self, departed: dict[str, Any], expected: str
+    ) -> None:
+        await self.message("/start", chat=GROUP_CHAT)
+        await self.message(
+            chat=GROUP_CHAT,
+            left_chat_member=departed,
+            **cast("dict[str, Any]", {"from": {**USER, "id": 99}}),
+        )
+        await self.message("/groups")
+        assert expected in self.last_reply()
+
     async def test_restricted_membership_uses_is_member(self) -> None:
         permissions: dict[str, Any] = dict.fromkeys(
             (
