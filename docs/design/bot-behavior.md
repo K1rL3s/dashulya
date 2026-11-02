@@ -58,6 +58,12 @@ Authorized private messages and explicit group mentions/replies to this bot
 invoke the reply agent directly. Group messages naming Dashulya, including
 “Дашуль” in any letter case, first pass an AG2 OpenAI Decisions classifier with
 bounded chat/topic context. A negative decision or classifier failure stays silent.
+The classifier favors replying when intent is uncertain. A direct call by name,
+question, request or social remark counts even when the request is infeasible or
+inappropriate; the reply agent handles those limitations. Clearly third-person
+discussion, quoted examples and explicit requests not to answer the current
+message stay silent. A real direct address takes precedence over surrounding
+discussion about the bot.
 `/clear` resets the current private conversation.
 
 Group tracking and message capture run before sender access checks, including
