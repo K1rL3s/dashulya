@@ -41,8 +41,8 @@ class AccessMiddleware(BaseMiddleware):
             raise ValueError(error_message)
         self._owner_user_id = owner_user_id
         self._groups = groups
-        self._group_commands = Command("start", "stop", "ban")
-        self._admin_commands = Command("stop", "ban")
+        self._group_commands = Command("start", "stop", "ban", "unban")
+        self._admin_commands = Command("stop", "ban", "unban")
 
     async def __call__(
         self,

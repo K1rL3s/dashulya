@@ -77,6 +77,13 @@ class GroupStore:
                 (chat_id, user_id),
             )
 
+    async def unban(self, chat_id: int, user_id: int) -> None:
+        async with self.database.connection() as connection:
+            await connection.execute(
+                "DELETE FROM group_blacklist WHERE chat_id=%s AND user_id=%s",
+                (chat_id, user_id),
+            )
+
     async def is_banned(self, chat_id: int, user_id: int) -> bool:
         async with self.database.connection() as connection:
             cursor = await connection.execute(

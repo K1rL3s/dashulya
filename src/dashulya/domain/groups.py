@@ -27,6 +27,8 @@ class GroupRepository(Protocol):
 
     async def ban(self, chat_id: int, user_id: int) -> None: ...
 
+    async def unban(self, chat_id: int, user_id: int) -> None: ...
+
     async def is_banned(self, chat_id: int, user_id: int) -> bool: ...
 
     async def resolve_username(self, chat_id: int, username: str) -> int | None: ...
@@ -67,6 +69,9 @@ class GroupRegistry:
 
     async def ban(self, chat_id: int, user_id: int) -> None:
         await self._store.ban(chat_id, user_id)
+
+    async def unban(self, chat_id: int, user_id: int) -> None:
+        await self._store.unban(chat_id, user_id)
 
     async def is_banned(self, chat_id: int, user_id: int) -> bool:
         return await self._store.is_banned(chat_id, user_id)

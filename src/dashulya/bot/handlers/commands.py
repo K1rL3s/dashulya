@@ -35,12 +35,14 @@ async def stop(message: Message, groups: FromDishka[GroupRegistry]) -> None:
 
 
 @inject
-async def ban(
+async def manage_blacklist(
     message: Message, command: CommandObject, groups: FromDishka[GroupRegistry]
 ) -> None:
     username = (command.args or "").strip()
     if re.fullmatch(r"@[A-Za-z0-9_]{1,32}", username) is None:
-        await message.answer("Usage: /ban @username — provide one Telegram username.")
+        await message.answer(
+            f"Usage: /{command.command} @username — provide one Telegram username."
+        )
         return
     username = username.lower()
     user_id = await groups.resolve_username(message.chat.id, username[1:])
@@ -50,8 +52,14 @@ async def ban(
             "Ask them to send a message, then try again."
         )
         return
-    await groups.ban(message.chat.id, user_id)
-    await message.answer(f"{username} can no longer trigger my replies in this group.")
+    if command.command == "ban":
+        await groups.ban(message.chat.id, user_id)
+        await message.answer(
+            f"{username} can no longer trigger my replies in this group."
+        )
+    else:
+        await groups.unban(message.chat.id, user_id)
+        await message.answer(f"{username} can trigger my replies in this group again.")
 
 
 async def show_help(message: Message) -> None:
@@ -60,6 +68,7 @@ async def show_help(message: Message) -> None:
         "/start — introduce myself; activate me in this group\n"
         "/stop — owner or chat admins can pause group replies; keep saving messages\n"
         "/ban @username — owner or chat admins can block a user's reply triggers\n"
+        "/unban @username — owner or chat admins can restore a user's reply triggers\n"
         "/help — show this guide\n"
         "/groups — list the groups I know I'm in\n"
         "/clear — reset your private conversation\n\n"
@@ -78,6 +87,8 @@ def create_router() -> Router:
     router = Router(name=__name__)
     router.message.register(start, CommandStart())
     router.message.register(stop, Command("stop"), F.chat.type.in_(GROUP_TYPES))
-    router.message.register(ban, Command("ban"), F.chat.type.in_(GROUP_TYPES))
+    router.message.register(
+        manage_blacklist, Command("ban", "unban"), F.chat.type.in_(GROUP_TYPES)
+    )
     router.message.register(show_help, Command("help"))
     return router

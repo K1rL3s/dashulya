@@ -4,12 +4,12 @@
 
 Authorize private messages, `/start` and other owner commands using the actual
 sender's numeric `from_user.id == OWNER_USER_ID`. Forwarded identities and
-authorship bindings grant no access. Group `/stop` and `/ban` are also available to the current chat's creator
+authorship bindings grant no access. Group `/stop`, `/ban` and `/unban` are also available to the current chat's creator
 and administrators, checked with `getChatAdministrators` for that chat on each
 request. A failed or timed-out lookup denies access and logs a redacted failure;
 the configured owner's commands do not depend on this lookup.
 
-Anonymous administrators may use `/stop` and `/ban` only when Telegram's authenticated
+Anonymous administrators may use `/stop`, `/ban` and `/unban` only when Telegram's authenticated
 `sender_chat.id` equals the current group's numeric ID. A forwarded identity or
 another sender chat grants no authority. Other bot senders, missing senders and
 unauthorized users are silently ignored before command execution or model
@@ -28,6 +28,11 @@ identity in this group. Ignore bot and channel identities; unknown, outdated or
 ambiguous names receive an English explanation asking for a new message from
 that participant. Store the ban by numeric user ID so a username change does not
 remove it. Repeated bans are idempotent.
+`/unban @username` removes the resolved sender's ban in the current group, using
+the same authority, argument validation and latest-username lookup. Repeating it
+confirms the removal even when no ban exists. The removal persists across
+restarts, leaves other users and groups unchanged, and does not activate a paused
+group. Both commands accept the bot-qualified form and work while inactive.
 The blacklist is scoped to the group across topics and persists in PostgreSQL.
 Check it before addressing, image loading or reply generation for all human
 senders, including the owner. Authorized administrative commands remain available.
@@ -42,8 +47,8 @@ chat administrator can use `/stop` to pause replies throughout the current group
 across topics. The command confirms the pause even if the group is already
 inactive. `/stop` is group-only; `/start`
 resumes group dialogue. Both activation and deactivation persist across restarts.
-While inactive, the owner may use `/start`, `/stop` and `/ban`, and chat administrators
-may use `/stop` and `/ban`; other commands, addressing decisions and reply generation remain
+While inactive, the owner may use `/start`, `/stop`, `/ban` and `/unban`, and chat administrators
+may use `/stop`, `/ban` and `/unban`; other commands, addressing decisions and reply generation remain
 silent, including the owner's. Activation grants group dialogue access to human
 participants outside the blacklist.
 

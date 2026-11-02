@@ -313,6 +313,22 @@ class TestGroupPersistence:
         assert not await reopened.is_banned(-456, 99)
         assert not await reopened.is_banned(-123, 100)
 
+    async def test_unban_persists_and_preserves_other_users_and_groups(self) -> None:
+        registry = GroupRegistry(GroupStore(self.database))
+        for chat_id in (-123, -456):
+            await registry.observe(Group(chat_id, "Test group"))
+            await registry.ban(chat_id, 99)
+        await registry.ban(-123, 100)
+        await registry.unban(-123, 99)
+        await registry.unban(-123, 99)
+        reopened_database = Database(self.database_url)
+        self.cleanup.push_async_callback(reopened_database.close)
+        await reopened_database.open()
+        reopened = GroupRegistry(GroupStore(reopened_database))
+        assert not await reopened.is_banned(-123, 99)
+        assert await reopened.is_banned(-456, 99)
+        assert await reopened.is_banned(-123, 100)
+
     @pytest.mark.parametrize("incoming_first", [False, True])
     async def test_blacklist_follows_migration_and_resets_after_departure(
         self, incoming_first: bool

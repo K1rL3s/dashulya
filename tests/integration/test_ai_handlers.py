@@ -942,6 +942,146 @@ class TestGroupBlacklist(_AIHandlerFixture):
     def _capture_originals(self, _setup: None) -> None:
         self.recorder.record.side_effect = MessageStore(self.database).record
 
+    @pytest.mark.parametrize("actor", ["owner", "administrator", "creator", "anonymous"])
+    async def test_unban_restores_renamed_user_only_in_current_group(
+        self, actor: str
+    ) -> None:
+        target = {**USER, "id": 99, "username": "boris_test"}
+        other_chat = {**GROUP, "id": -456}
+        await self.message("/start", chat=other_chat)
+        for chat in (GROUP, other_chat):
+            await self.message("Group chatter", chat=chat, sender=target)
+            await self.message("/ban @boris_test", chat=chat)
+        await self.message(
+            "Other user", chat=GROUP, sender={**USER, "id": 100, "username": "other_user"}
+        )
+        await self.message("/ban @other_user", chat=GROUP)
+        await self.message("/stop", chat=GROUP)
+        target = {**target, "username": "renamed_boris"}
+        await self.message("My new username", chat=GROUP, sender=target)
+        self.administrators[-123] = [administrator(99, creator=actor == "creator")]
+        sender = USER if actor == "owner" else target
+        fields: dict[str, Any] = {}
+        if actor == "anonymous":
+            sender = {"id": 1087968824, "is_bot": True, "first_name": "GroupAnonymousBot"}
+            fields["sender_chat"] = GROUP
+        for command in ("/unban@dashulya_bot @RENAMED_boris", "/unban @renamed_boris"):
+            self.requests.reset_mock()
+            await self.message(command, chat=GROUP, sender=sender, **fields)
+            assert [reply.text for reply in self.replies()] == [
+                "@renamed_boris can trigger my replies in this group again."
+            ]
+        self.requests.reset_mock()
+        mention = [{"type": "mention", "offset": 0, "length": 13}]
+        await self.message(
+            "@dashulya_bot hello", chat=GROUP, sender=target, entities=mention
+        )
+        assert self.replies() == []
+        await self.message("/start", chat=GROUP)
+        self.requests.reset_mock()
+        await self.message(
+            "@dashulya_bot hello", chat=GROUP, sender=target, entities=mention
+        )
+        assert [reply.text for reply in self.replies()] == ["Hello <Anna> 💋"]
+        self.requests.reset_mock()
+        await self.message(
+            "@dashulya_bot hello", chat=other_chat, sender=target, entities=mention
+        )
+        await self.message(
+            "@dashulya_bot hello",
+            chat=GROUP,
+            sender={**USER, "id": 100},
+            entities=mention,
+        )
+        assert self.replies() == []
+
+    async def test_invalid_and_unknown_unban_arguments_leave_the_ban_in_place(
+        self,
+    ) -> None:
+        target = {**USER, "id": 99, "username": "target_user"}
+        await self.message("Group chatter", chat=GROUP, sender=target)
+        await self.message("/ban @target_user", chat=GROUP)
+        for argument in (
+            "",
+            "99",
+            "target_user",
+            "@target_user @other_user",
+            "@bad-name",
+        ):
+            self.requests.reset_mock()
+            await self.message(f"/unban {argument}".rstrip(), chat=GROUP)
+            assert [reply.text for reply in self.replies()] == [
+                "Usage: /unban @username — provide one Telegram username."
+            ]
+        self.requests.reset_mock()
+        await self.message("/unban @missing_user", chat=GROUP)
+        assert [reply.text for reply in self.replies()] == [
+            (
+                "I couldn't identify @missing_user in this group's saved messages. "
+                "Ask them to send a message, then try again."
+            )
+        ]
+        self.requests.reset_mock()
+        await self.message(
+            "@dashulya_bot hello",
+            chat=GROUP,
+            sender=target,
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert self.replies() == []
+        self.dialogue.reply.assert_not_awaited()
+
+    async def test_unban_requires_chat_authority_and_owner_can_bypass_lookup_failure(
+        self,
+    ) -> None:
+        target = {**USER, "id": 100, "username": "target_user"}
+        await self.message("Group chatter", chat=GROUP, sender=target)
+        await self.message("/ban @target_user", chat=GROUP)
+        self.administrators[-456] = [administrator(99)]
+        self.requests.reset_mock()
+        for sender, fields in (
+            ({**USER, "id": 99}, {}),
+            ({**USER, "is_bot": True}, {}),
+            (USER, {"from": None}),
+            (
+                {"id": 1087968824, "is_bot": True, "first_name": "GroupAnonymousBot"},
+                {"sender_chat": {**GROUP, "id": -789}},
+            ),
+        ):
+            await self.message("/unban @target_user", chat=GROUP, sender=sender, **fields)
+        await self.message("/unban @target_user")
+        await self.message("/unban@other_bot @target_user", chat=GROUP)
+        assert self.replies() == []
+
+        async def request(bot: Bot, method: TelegramMethod[Any], **kwargs: Any) -> Any:
+            if isinstance(method, GetChatAdministrators):
+                raise TimeoutError
+            return await self.request(bot, method, **kwargs)
+
+        self.requests.side_effect = request
+        await self.message("/unban @target_user", chat=GROUP, sender={**USER, "id": 99})
+        assert self.replies() == []
+        await self.message(
+            "@dashulya_bot hello",
+            chat=GROUP,
+            sender=target,
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert self.replies() == []
+        self.dialogue.reply.assert_not_awaited()
+        await self.message("/unban @target_user", chat=GROUP)
+        assert [reply.text for reply in self.replies()] == [
+            "@target_user can trigger my replies in this group again."
+        ]
+        self.requests.reset_mock()
+        await self.message(
+            "@dashulya_bot hello",
+            chat=GROUP,
+            sender=target,
+            entities=[{"type": "mention", "offset": 0, "length": 13}],
+        )
+        assert [reply.text for reply in self.replies()] == ["Hello <Anna> 💋"]
+
     async def test_unknown_stale_ambiguous_and_other_chat_usernames_are_not_banned(
         self,
     ) -> None:

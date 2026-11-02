@@ -83,15 +83,16 @@ records the storage decision.
 | `/start` | Meet Dashulya; activate replies in the current group |
 | `/stop` | Owner or chat admins pause replies in the current group; keep saving messages |
 | `/ban @username` | Owner or chat admins stop a user from triggering replies in this group |
+| `/unban @username` | Owner or chat admins restore a user's ability to trigger replies in this group |
 | `/help` | See the available commands and how to use them |
 | `/groups` | List the groups she knows about |
 | `/clear` | Reset the current private conversation |
 
 Private conversations and commands are available only to the configured owner,
-except group `/stop` and `/ban`, which are also available to that group's administrators.
+except group `/stop`, `/ban` and `/unban`, which are also available to that group's administrators.
 Every group starts inactive. The owner enables replies with `/start` (or
 `/start@<bot_username>`) in that group. While inactive, the owner can use `/start`,
-`/stop` and `/ban`; chat administrators can use `/stop` and `/ban`. Sending `/start`
+`/stop`, `/ban` and `/unban`; chat administrators can use `/stop`, `/ban` and `/unban`. Sending `/start`
 privately or in another group does not activate it. `/groups` shows each
 group's activation status. Activation survives restarts, name changes and
 supergroup migration; removing and re-adding the bot requires a new `/start`.
@@ -102,7 +103,7 @@ with `/stop` or `/stop@<bot_username>`. Only the owner can resume with `/start`.
 Group tracking, message capture and indexing continue while replies are inactive.
 
 Administrator rights are checked against Telegram's current list for that chat;
-failed checks deny access. Anonymous administrators can use `/stop` and `/ban` when Telegram's
+failed checks deny access. Anonymous administrators can use `/stop`, `/ban` and `/unban` when Telegram's
 `sender_chat` matches the current group's numeric ID.
 
 Use `/ban @username` (or `/ban@<bot_username> @username`). Lookups ignore case and
@@ -115,6 +116,11 @@ Repeating the command is harmless. Banned users' mentions, replies and name-base
 requests do not invoke the classifier or reply model. Their messages continue to
 be saved and can appear in context and memory. Other groups and private access
 are unaffected. Administrative commands remain available to authorized senders.
+
+Use `/unban @username` to remove a ban in this group, using the participant's
+latest saved username. The same rights and lookup rules apply as for `/ban`.
+Repeating `/unban` is harmless, and the removal persists across restarts.
+Unbanning does not activate a paused group or remove anyone else's ban.
 
 In any group activated by the owner, human participants outside its blacklist may address the bot.
 Private messages, an explicit @mention of the bot, and replies to its messages
