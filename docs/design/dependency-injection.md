@@ -37,8 +37,8 @@ domain/
 ```
 
 `domain` has no application or infrastructure imports. `GroupRegistry` owns
-observed group migrations, membership changes, persistent activation, and bounded
-group-list output.
+observed group migrations, membership changes, persistent activation, blacklists,
+and bounded group-list output.
 `storage.groups.GroupStore` implements the asynchronous `GroupRepository` using
 PostgreSQL. `DatabaseProvider` owns the single application-scoped async pool,
 verifies its migration journal and closes it after dependent resources are finalized.
@@ -93,21 +93,30 @@ from all participants, owner-private messages and successful deliveries use
 actual Telegram IDs; other private senders are excluded. `TelegramProvider`
 attaches outgoing capture to the shared bot session.
 It supplies `AccessMiddleware` with the owner ID and `GroupRegistry`.
-Private messages, activation and other commands stay owner-only. `/stop` also
-admits the current chat's administrators, verified through the event's Telegram
+Private messages, activation and other commands stay owner-only. `/stop` and `/ban`
+also admit the current chat's administrators, verified through the event's Telegram
 bot using `getChatAdministrators`. Failed lookups deny access; named administrator
 rights are not cached. Telegram's authenticated `sender_chat` for the current
-group allows anonymous administrators to stop replies without granting `/start`.
-Human participants in any
-activated group may proceed to normal addressing; bot/missing senders and
+group allows anonymous administrators to pause replies and ban users without
+granting `/start`. Human participants in any activated group may proceed to normal
+addressing unless banned; bot/missing senders and
 unauthorized private chats remain silent. Capture and group tracking still
 precede this gate. Activation grants dialogue access within the group without
 expanding memory authority.
 The same gate checks group activation through `GroupRegistry`; inactive groups
-admit the human owner's `/start` and owner/admin `/stop`. These commands persist the
-current group's activation or deactivation in PostgreSQL before confirming it.
+admit the human owner's `/start` and owner/admin `/stop` and `/ban`. `/start` and
+`/stop` persist the current group's activation or deactivation in PostgreSQL
+before confirming it.
 Ordinary observations preserve activation, migration
 transfers it, and departure removes it with the registry entry.
+
+`/ban @username` resolves a unique human sender from their latest canonical
+message metadata in the current chat through `GroupRegistry` and `GroupStore`.
+The blacklist stores numeric sender IDs separately from originals and is checked
+before addressing and generation. Administrative commands retain their access.
+The store merges bans during group migration and cascades their deletion on
+departure. Capture continues for banned senders; username lookups and bans do not
+change saved originals or memory authority.
 
 AI factories accept ordinary arguments; tools declare injected dependencies
 with `FromDishka` and the AG2 integration's `@inject`. Model choices, timeouts,

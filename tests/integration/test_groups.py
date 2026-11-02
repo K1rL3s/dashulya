@@ -295,6 +295,50 @@ class TestGroupPersistence:
         self.database_url = database_url
         self.cleanup = cleanup
 
+    async def test_blacklist_survives_restart_and_metadata_refresh_only_in_its_group(
+        self,
+    ) -> None:
+        registry = GroupRegistry(GroupStore(self.database))
+        await registry.observe(Group(-123, "Test group"))
+        await registry.observe(Group(-456, "Other group"))
+        assert not await registry.is_banned(-123, 99)
+        await registry.ban(-123, 99)
+        await registry.ban(-123, 99)
+        reopened_database = Database(self.database_url)
+        self.cleanup.push_async_callback(reopened_database.close)
+        await reopened_database.open()
+        reopened = GroupRegistry(GroupStore(reopened_database))
+        await reopened.observe(Group(-123, "Renamed group", "renamed"))
+        assert await reopened.is_banned(-123, 99)
+        assert not await reopened.is_banned(-456, 99)
+        assert not await reopened.is_banned(-123, 100)
+
+    @pytest.mark.parametrize("incoming_first", [False, True])
+    async def test_blacklist_follows_migration_and_resets_after_departure(
+        self, incoming_first: bool
+    ) -> None:
+        registry = GroupRegistry(GroupStore(self.database))
+        await registry.observe(Group(-123, "Old group"))
+        await registry.ban(-123, 99)
+        await registry.ban(-123, 101)
+        await registry.observe(Group(-100456, "New group"))
+        await registry.ban(-100456, 99)
+        await registry.ban(-100456, 100)
+        if incoming_first:
+            await registry.observe(Group(-100456, "New group"), migrated_from=-123)
+            await registry.observe(Group(-123, "Old group"), migrated_to=-100456)
+        else:
+            await registry.observe(Group(-123, "Old group"), migrated_to=-100456)
+            await registry.observe(Group(-100456, "New group"), migrated_from=-123)
+        assert await registry.is_banned(-100456, 99)
+        assert await registry.is_banned(-100456, 100)
+        assert await registry.is_banned(-100456, 101)
+        assert not await registry.is_banned(-123, 99)
+        await registry.membership(Group(-100456, "New group"), present=False)
+        await registry.membership(Group(-100456, "New group"), present=True)
+        assert not await registry.is_banned(-100456, 99)
+        assert not await registry.is_banned(-100456, 100)
+
     async def test_activation_survives_restart_metadata_refresh_and_membership_update(
         self,
     ) -> None:

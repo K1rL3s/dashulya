@@ -4,20 +4,37 @@
 
 Authorize private messages, `/start` and other owner commands using the actual
 sender's numeric `from_user.id == OWNER_USER_ID`. Forwarded identities and
-authorship bindings grant no access. Group `/stop` is also available to the current chat's creator
+authorship bindings grant no access. Group `/stop` and `/ban` are also available to the current chat's creator
 and administrators, checked with `getChatAdministrators` for that chat on each
 request. A failed or timed-out lookup denies access and logs a redacted failure;
 the configured owner's commands do not depend on this lookup.
 
-Anonymous administrators may use `/stop` only when Telegram's authenticated
+Anonymous administrators may use `/stop` and `/ban` only when Telegram's authenticated
 `sender_chat.id` equals the current group's numeric ID. A forwarded identity or
 another sender chat grants no authority. Other bot senders, missing senders and
 unauthorized users are silently ignored before command execution or model
 invocation.
 
-After the owner activates a group, all human participants may invoke group
-dialogue there. Addressing rules still apply. Other group commands remain
+After the owner activates a group, human participants outside its blacklist may
+invoke group dialogue there. Addressing rules still apply. Other group commands remain
 owner-only.
+
+The owner and current chat administrators may use `/ban @username` in groups,
+including inactive groups, with the same authority checks as `/stop`. Accept
+exactly one `@username` using ASCII letters, digits and underscores, up to 32
+characters after `@`; invalid arguments receive an English usage message.
+Resolve usernames without case sensitivity from each human sender's latest saved
+identity in this group. Ignore bot and channel identities; unknown, outdated or
+ambiguous names receive an English explanation asking for a new message from
+that participant. Store the ban by numeric user ID so a username change does not
+remove it. Repeated bans are idempotent.
+The blacklist is scoped to the group across topics and persists in PostgreSQL.
+Check it before addressing, image loading or reply generation for all human
+senders, including the owner. Authorized administrative commands remain available.
+Capture and saved history remain unchanged; banned users' originals can still
+appear in context and memory. Private access and other groups are unaffected.
+Preserve bans across metadata updates and supergroup migration; remove them when
+the bot departs, along with the group registry entry.
 
 Every group starts inactive, including existing groups on upgrade. Only the
 actual human owner's `/start` in that group activates replies. The bot owner or a
@@ -25,10 +42,10 @@ chat administrator can use `/stop` to pause replies throughout the current group
 across topics. The command confirms the pause even if the group is already
 inactive. `/stop` is group-only; `/start`
 resumes group dialogue. Both activation and deactivation persist across restarts.
-While inactive, the owner may use `/start` and `/stop`, and chat administrators
-may use `/stop`; other commands, addressing decisions and reply generation remain
-silent, including the owner's. Activation grants group dialogue access to all
-human participants.
+While inactive, the owner may use `/start`, `/stop` and `/ban`, and chat administrators
+may use `/stop` and `/ban`; other commands, addressing decisions and reply generation remain
+silent, including the owner's. Activation grants group dialogue access to human
+participants outside the blacklist.
 
 ## Routing and capture
 

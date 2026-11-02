@@ -82,16 +82,17 @@ records the storage decision.
 | --- | --- |
 | `/start` | Meet Dashulya; activate replies in the current group |
 | `/stop` | Owner or chat admins pause replies in the current group; keep saving messages |
+| `/ban @username` | Owner or chat admins stop a user from triggering replies in this group |
 | `/help` | See the available commands and how to use them |
 | `/groups` | List the groups she knows about |
 | `/clear` | Reset the current private conversation |
 
 Private conversations and commands are available only to the configured owner,
-except group `/stop`, which is also available to that group's administrators.
+except group `/stop` and `/ban`, which are also available to that group's administrators.
 Every group starts inactive. The owner enables replies with `/start` (or
-`/start@<bot_username>`) in that group. While inactive, the owner can use `/start`
-and `/stop`; chat administrators can use `/stop`. Sending
-`/start` privately or in another group does not activate it. `/groups` shows each
+`/start@<bot_username>`) in that group. While inactive, the owner can use `/start`,
+`/stop` and `/ban`; chat administrators can use `/stop` and `/ban`. Sending `/start`
+privately or in another group does not activate it. `/groups` shows each
 group's activation status. Activation survives restarts, name changes and
 supergroup migration; removing and re-adding the bot requires a new `/start`.
 Groups already known before this feature also start inactive after upgrading.
@@ -101,10 +102,21 @@ with `/stop` or `/stop@<bot_username>`. Only the owner can resume with `/start`.
 Group tracking, message capture and indexing continue while replies are inactive.
 
 Administrator rights are checked against Telegram's current list for that chat;
-failed checks deny access. Anonymous administrators can stop replies when Telegram's
+failed checks deny access. Anonymous administrators can use `/stop` and `/ban` when Telegram's
 `sender_chat` matches the current group's numeric ID.
 
-In any group activated by the owner, all human participants may address the bot.
+Use `/ban @username` (or `/ban@<bot_username> @username`). Lookups ignore case and
+use each human sender's latest saved username in this group. Unknown, outdated or
+ambiguous usernames require a new message from that participant before retrying.
+The ban binds to their numeric ID, so changing their username does not remove it.
+The blacklist applies across topics in this group, survives restarts and
+supergroup migration, and is removed when the bot leaves the group.
+Repeating the command is harmless. Banned users' mentions, replies and name-based
+requests do not invoke the classifier or reply model. Their messages continue to
+be saved and can appear in context and memory. Other groups and private access
+are unaffected. Administrative commands remain available to authorized senders.
+
+In any group activated by the owner, human participants outside its blacklist may address the bot.
 Private messages, an explicit @mention of the bot, and replies to its messages
 start an AI conversation directly. Other commands remain owner-only in enabled groups.
 

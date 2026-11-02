@@ -41,8 +41,8 @@ class AccessMiddleware(BaseMiddleware):
             raise ValueError(error_message)
         self._owner_user_id = owner_user_id
         self._groups = groups
-        self._group_commands = Command("start", "stop")
-        self._stop = Command("stop")
+        self._group_commands = Command("start", "stop", "ban")
+        self._admin_commands = Command("stop", "ban")
 
     async def __call__(
         self,
@@ -56,7 +56,7 @@ class AccessMiddleware(BaseMiddleware):
             event.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
             and event.sender_chat is not None
             and event.sender_chat.id == event.chat.id
-            and await self._stop(event, data["bot"])
+            and await self._admin_commands(event, data["bot"])
         ):
             # Telegram identifies anonymous administrators by their own sender_chat.
             return await handler(event, data)
@@ -66,21 +66,23 @@ class AccessMiddleware(BaseMiddleware):
         if sender.id != self._owner_user_id:
             if event.chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
                 return None
-            # Chat administrators may pause replies; all other commands stay owner-only.
+            # Chat administrators may pause replies and manage the group blacklist.
             if (event.text or event.caption or "").lstrip().startswith("/"):
                 bot = data["bot"]
-                if not await self._stop(event, bot):
+                if not await self._admin_commands(event, bot):
                     return None
                 if not await _is_chat_admin(bot, event.chat.id, sender.id):
                     return None
                 return await handler(event, data)
         if (
             event.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
-            and not await self._groups.is_active(event.chat.id)
-            and not (
-                sender.id == self._owner_user_id
-                and await self._group_commands(event, data["bot"])
-            )
+            and sender.id == self._owner_user_id
+            and await self._group_commands(event, data["bot"])
+        ):
+            return await handler(event, data)
+        if event.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP} and (
+            not await self._groups.is_active(event.chat.id)
+            or await self._groups.is_banned(event.chat.id, sender.id)
         ):
             return None
         return await handler(event, data)

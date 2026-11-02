@@ -25,6 +25,12 @@ class GroupRepository(Protocol):
 
     async def is_active(self, chat_id: int) -> bool: ...
 
+    async def ban(self, chat_id: int, user_id: int) -> None: ...
+
+    async def is_banned(self, chat_id: int, user_id: int) -> bool: ...
+
+    async def resolve_username(self, chat_id: int, username: str) -> int | None: ...
+
 
 class GroupRegistry:
     def __init__(self, store: GroupRepository) -> None:
@@ -58,6 +64,15 @@ class GroupRegistry:
 
     async def is_active(self, chat_id: int) -> bool:
         return await self._store.is_active(chat_id)
+
+    async def ban(self, chat_id: int, user_id: int) -> None:
+        await self._store.ban(chat_id, user_id)
+
+    async def is_banned(self, chat_id: int, user_id: int) -> bool:
+        return await self._store.is_banned(chat_id, user_id)
+
+    async def resolve_username(self, chat_id: int, username: str) -> int | None:
+        return await self._store.resolve_username(chat_id, username)
 
     async def messages(self) -> list[str]:
         groups = await self._store.list_groups()
