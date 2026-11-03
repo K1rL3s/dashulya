@@ -238,6 +238,13 @@ attachment contents. Incoming reply
 snapshots can fill missing parents without overwriting recorded originals or
 their deeper reply relationships.
 
+Poll messages retain a textual projection containing only their question and
+numbered answer options, preserving the original language and complete text.
+The same projection supplies current model input, addressing, reply context and
+saved history/search. Vote counts, voter identities, poll mode/status and quiz
+answers are not included. Owner-private replies to a poll also include that
+parent's question and options. Poll reading does not subscribe to vote updates.
+
 After sender authorization and a positive addressing decision, private replies
 load the current visual media and its direct reply parent's image into RAM.
 Group replies select their reply context first, then load all of that selection's
