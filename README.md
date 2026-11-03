@@ -52,6 +52,8 @@ and [Ostrikov's chat](https://t.me/aostrikov_agents_chat)
   cache or Telegram when a file reference is available.
 - **Search the web.** With `KEENABLE_API_KEY` configured, find current public information
   through Keenable and read source pages, with links in the answer.
+- **Run Python calculations.** Use OpenAI's hosted Code Interpreter through
+  AG2's [built-in `CodeExecutionTool`](https://docs.ag2.ai/docs/user-guide/tools/builtin_tools/#code-execution).
 - **Keep track of groups.** List groups the bot has observed, preserving the
   registry across restarts.
 
@@ -268,8 +270,8 @@ repeating that declaration. Repeated local hours include a numeric UTC offset
 to distinguish their occurrences. The application computes the weekday. `BOT_TIMEZONE`
 defaults to `Europe/Moscow` and accepts IANA timezone names. Log timestamps
 remain in UTC.
-Logs correlate model and tool calls with the triggering chat/message. Each tool
-has start/end events with its name, call ID, duration and outcome; model events
+Logs correlate model and tool calls with the triggering chat/message. Function tools
+have start/end events with their name, call ID, duration and outcome; model events
 include timings, input/output/reasoning token counts when supplied, and input
 image counts. Successful model-call events also include the raw `agent_output`,
 `message_count` from its JSON `messages` list (null when unavailable), and
@@ -277,6 +279,12 @@ image counts. Successful model-call events also include the raw `agent_output`,
 JSON or an oversized message list; model-call success does not imply valid output.
 `AI reply validation failed` records validation error types and field paths.
 Schema rejection does not automatically request another model response.
+An AG2 observer logs provider-hosted tools, including Code Interpreter, as
+`AI builtin tool call observed` and `AI builtin tool result observed`, with
+`tool_name`, `tool_call_id`, chat/message IDs and `tool_status` when supplied.
+These events arrive with the provider response and do not measure execution
+duration. Code and tool results stay excluded. `tool_call_count` counts only
+function tools; builtin calls have their own observer records.
 Media loading and Telegram delivery have separate timings. Generated and
 delivered replies record their message count; delivery also records the number
 of confirmed Telegram chunks. `AI reply delivery failed` distinguishes `render`

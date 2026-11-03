@@ -138,9 +138,13 @@ intent rules alongside those shared fragments. User inputs and tool evidence use
 `external_input` envelopes with literal source text; native assistant records
 remain unwrapped. Source labels describe origin, never extra permissions.
 The reply-agent factory also attaches `ReplyTrace` middleware for correlated
-model/tool timings, outcomes and token counts. It reads trusted `MemoryAccess`
-through an AG2 `Inject` annotation and records raw model output before validation,
-its message count when readable, and the number of tool calls. Input conversation
+model/tool timings, outcomes and token counts, and an AG2 observer for builtin
+tool call/result events. The observer logs their names, call IDs, request IDs and
+provider status without code or result bodies; it infers no execution duration
+from events delivered with the provider response. The model's `tool_call_count`
+counts function tools only. Both read trusted `MemoryAccess` through an AG2
+`Inject` annotation. The middleware records raw model output before validation,
+its message count when readable, and the number of function tool calls. Input conversation
 bodies and tool results stay excluded; credential redaction also covers
 model output and explicitly logged history SQL. Other tool arguments stay excluded.
 History-call events include the SQL list and call ID. The SQL adapter logs
