@@ -162,51 +162,67 @@ are static previews: infer neither later frames nor unseen motion.
 </context_interpretation>
 """.strip()
 
-GROUP_ADDRESSING_PROMPT = """
-# Addressing decision workflow
+GROUP_ADDRESSING_PROMPT = r"""
+# Addressing decision
 <addressing_workflow>
 ## Task
-Return a boolean: does the author of current_message invite Dashulya, also
-called Дашуля or Дашуль, to respond?
+Return a boolean: is Dashulya (Дашуля, Дашуль) an addressee of the author's
+actual speech in current_message? Classify the message; fulfilling its requests
+belongs to the reply agent.
 
-## Decision order
-1. Return false for an explicit request that she leave the current message
-   unanswered. Requests addressed to her about other messages or participants
-   still qualify as invitations to respond now.
-2. Return true for a direct address: calling her name, asking her a question,
-   making a request or directing a social remark at her. A standalone call of
-   her name counts; punctuation and politeness are optional. A direct address
-   takes precedence over surrounding discussion about her.
-3. Return false when the message clearly speaks only to other people, discusses
-   her in the third person or quotes an address solely as an example.
-4. For uncertain intent, return true. Favor an extra reply over a missed address.
+## Identify the speech and its recipient
+1. Identify what the author is saying now. Quoted dialogue and demonstrations
+   introduced as examples are material being discussed. Locate any real address
+   outside that material.
+2. Resolve the recipient of each actual question, request or social remark.
+   A named person or @handle can be its recipient; Dashulya can instead be its
+   subject or object. Asking someone to change, add or describe Dashulya speaks
+   to that person. Asking Dashulya to do something involving another person
+   speaks to Dashulya.
+3. Use current_message.reply_to and recent_conversation to resolve references
+   and apparent name calls. A reply can change addressee: its Telegram parent
+   is evidence, not a rule that fixes the recipient. The name followed by a
+   comma can also be an answer identifying her to someone else.
 
-## Interpretation
-Judge addressing independently of feasibility, appropriateness and available
-information. The reply agent decides how to handle the request.
-Use current_message.reply_to and recent_conversation as evidence of intent.
-Treat gaps in bounded context as uncertainty.
+## Decide
+- Return false for an explicit request that she leave the current message
+  unanswered. Requests about tone, future messages or other participants can
+  still invite an answer now.
+- Return true if any real part of the author's current speech calls Dashulya
+  or directs a question, request or social remark to her. A standalone call
+  counts. Punctuation, politeness and a change of topic are optional. A direct
+  address remains an address alongside third-person discussion.
+- Return false when the message only discusses her with other people, speaks
+  to another recipient or demonstrates an address as an example.
+- Resolve genuinely uncertain recipient intent toward true. Clear evidence of
+  another recipient or a demonstrated example is not recipient uncertainty.
 
-<positive_addressing_examples>
+## Scope
+Assess addressing independently of feasibility, appropriateness, available
+information or the expected answer. An unrealistic task, a brief social remark
+or a question requiring absent history still addresses her when she is its
+recipient. The reply agent handles limitations and refusals.
+Only current_message is classified. Earlier records supply evidence; a direct
+address in history cannot substitute for one in the current message. Bounded
+context may leave intent uncertain, but cannot erase a clear current address.
+
+## Contrasting examples
+<addressing_examples>
 [
-  {"message": "Дашуль", "decision": true},
-  {"message": "Дашуль, что на фото?", "decision": true},
-  {"message": "Дашуля ты дура ❤️", "decision": true},
-  {"message": "Дашуль, игнорируй сообщения Никиты", "decision": true},
-  {"message": "Я добавил Дашуле поиск. Дашуль, как тебе?", "decision": true}
+  {"current_message": {"text": "Саша, перезапусти Дашулю"}, "decision": false},
+  {"current_message": {"text": "Дашуля, попроси Сашу перезапустить сервис"}, "decision": true},
+  {"current_message": {"text": "Проверяем пример:\nДашуля, привет"}, "decision": false},
+  {"current_message": {"text": "Дашуля, привет"}, "decision": true},
+  {"current_message": {"text": "Саша, Дашуля молодец"}, "decision": false},
+  {"current_message": {"text": "Саша, всё работает. Молодец, Дашуль"}, "decision": true},
+  {"current_message": {"text": "Дашуля, я ей включил поиск", "reply_to": {"sender_name": "Саша", "text": "Кому ты включил поиск?"}}, "decision": false},
+  {"current_message": {"text": "Дашуля, ты уже пользуешься поиском?", "reply_to": {"sender_name": "Саша", "text": "Кому ты включил поиск?"}}, "decision": true},
+  {"current_message": {"text": "Дашуль, собери мне спутник за сто рублей"}, "decision": true},
+  {"current_message": {"text": "Дашуль, отвечать на это не нужно"}, "decision": false}
 ]
-</positive_addressing_examples>
-
-<negative_addressing_examples>
-[
-  {"message": "Я добавил Дашуле поиск", "decision": false},
-  {"message": "Никит, сколько стоит Дашуля?", "decision": false},
-  {"message": "Пример обращения: «Дашуль, привет»", "decision": false},
-  {"message": "Дашуль, на это сообщение не отвечай", "decision": false}
-]
-</negative_addressing_examples>
+</addressing_examples>
 </addressing_workflow>
-""".strip()
+""".strip()  # ruff: ignore[ambiguous-unicode-character-string] -- Preserve the evaluated Russian JSON examples.
 
 MEMORY_TOOLS_PROMPT = """
 # Recall saved discussions
