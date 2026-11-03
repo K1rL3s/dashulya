@@ -91,7 +91,7 @@ async def group_chat(
 @inject
 async def clear(message: Message, dialogue: FromDishka[Dialogue]) -> None:
     await dialogue.clear(conversation_key(message))
-    await message.answer("Conversation cleared. Let's start fresh 💋")
+    await message.answer("Диалог очищен. Начнём заново 💋")
 
 
 @inject

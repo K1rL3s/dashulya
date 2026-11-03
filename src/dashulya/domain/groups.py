@@ -84,18 +84,22 @@ class GroupRegistry:
         messages: list[str] = []
         if not groups:
             return [
-                "📭 I don't know of any groups yet. Add me to a group, then send /start there."
+                "📭 Пока не знаю ни одной группы. Добавь меня в группу и отправь там /start."
             ]
-        text = "📋 Groups I know I'm in:"
+        text = "📋 Известные мне группы:"
         for group in groups:
             username = f" @{group.username}" if group.username else ""
             status = "🟢" if group.active else "🔴"
             line = f"\n\n{status} {group.title}{username} (ID: {group.chat_id})"
-            line += " — active" if group.active else " — inactive (send /start there)"
+            line += (
+                " — отвечаю"
+                if group.active
+                else " — ответы выключены (отправь там /start)"
+            )
             # Leave room below Telegram's 4096-character limit, including emoji.
             if len((text + line).encode("utf-16-le")) > 8000:
                 messages.append(text)
-                text = "📋 Groups (continued):"
+                text = "📋 Группы (продолжение):"
             text += line
         messages.append(text)
         return messages

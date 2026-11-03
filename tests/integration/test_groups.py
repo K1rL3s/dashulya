@@ -114,7 +114,7 @@ class TestGroupTracking:
 
     async def test_empty_list_and_private_chats_are_not_registered(self) -> None:
         await self.message("/groups")
-        assert "I don't know of any groups yet" in self.last_reply()
+        assert "Пока не знаю ни одной группы" in self.last_reply()
         assert self.last_reply().startswith("📭")
         assert await self.groups.list_groups() == []
 
@@ -132,8 +132,8 @@ class TestGroupTracking:
         text = self.last_reply()
         assert "🔴 Test group (ID: -123)" in text
         assert "🔴 Public group @public_group (ID: -100456)" in text
-        assert text.startswith("📋 Groups I know I'm in:")
-        assert text.count("— inactive (send /start there)") == 2
+        assert text.startswith("📋 Известные мне группы:")
+        assert text.count("— ответы выключены (отправь там /start)") == 2
         assert text.index("Public group") < text.index("Test group")
 
     async def test_existing_group_is_registered_before_answering_command(self) -> None:
@@ -143,7 +143,7 @@ class TestGroupTracking:
         await self.message("/start@dashulya_bot", chat=GROUP_CHAT)
         await self.message("/groups@dashulya_bot", chat=GROUP_CHAT)
         assert "🟢 Test group (ID: -123)" in self.last_reply()
-        assert "— active" in self.last_reply()
+        assert "— отвечаю" in self.last_reply()
         assert len(await self.groups.list_groups()) == 1
 
     async def test_messages_refresh_metadata_without_duplicate_groups(self) -> None:
@@ -165,7 +165,7 @@ class TestGroupTracking:
                 fields: dict[str, Any] = {"until_date": 0} if status == "kicked" else {}
                 await self.membership(status, **fields)
                 await self.message("/groups")
-                assert "I don't know of any groups yet" in self.last_reply()
+                assert "Пока не знаю ни одной группы" in self.last_reply()
                 await self.membership()
                 assert await self.groups.list_groups() == [Group(-123, "Test group")]
 
@@ -187,18 +187,18 @@ class TestGroupTracking:
         if not membership_first:
             await self.membership("kicked", chat=chat, until_date=0)
         await self.message("/groups")
-        assert "I don't know of any groups yet" in self.last_reply()
+        assert "Пока не знаю ни одной группы" in self.last_reply()
         await self.membership(chat=chat)
         await self.message("/groups")
         assert "🔴 Test group (ID: -123)" in self.last_reply()
-        assert "— inactive (send /start there)" in self.last_reply()
+        assert "— ответы выключены (отправь там /start)" in self.last_reply()
 
     @pytest.mark.parametrize(
         ("departed", "expected"),
         [
-            (BOT_USER, "I don't know of any groups yet"),
-            (USER, "🟢 Test group (ID: -123) — active"),
-            ({**BOT_USER, "id": 987654321}, "🟢 Test group (ID: -123) — active"),
+            (BOT_USER, "Пока не знаю ни одной группы"),
+            (USER, "🟢 Test group (ID: -123) — отвечаю"),
+            ({**BOT_USER, "id": 987654321}, "🟢 Test group (ID: -123) — отвечаю"),
         ],
     )
     async def test_departure_service_without_membership_update_removes_only_this_bot(

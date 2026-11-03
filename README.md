@@ -82,13 +82,16 @@ records the storage decision.
 
 | Command | What happens |
 | --- | --- |
+| `/help` | See the available commands and how to use them |
+| `/clear` | Reset the current private conversation |
+| `/groups` | List the groups she knows about |
 | `/start` | Meet Dashulya; activate replies in the current group |
 | `/stop` | Owner or chat admins pause replies in the current group; keep saving messages |
 | `/ban @username` | Owner or chat admins stop a user from triggering replies in this group |
 | `/unban @username` | Owner or chat admins restore a user's ability to trigger replies in this group |
-| `/help` | See the available commands and how to use them |
-| `/groups` | List the groups she knows about |
-| `/clear` | Reset the current private conversation |
+
+Bot service messages are in Russian. `/help` groups commands for the private
+conversation, group management and participant restrictions.
 
 Private conversations and commands are available only to the configured owner,
 except group `/stop`, `/ban` and `/unban`, which are also available to that group's administrators.

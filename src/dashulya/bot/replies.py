@@ -117,7 +117,7 @@ class ReplyDelivery:
                 )
                 messages = (
                     Reply(
-                        "I couldn't get an AI reply right now. Please try again in a moment."
+                        "Сейчас не удалось подготовить ответ. Попробуй ещё раз чуть позже."
                     ),
                 )
         if not messages:

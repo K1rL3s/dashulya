@@ -22,10 +22,10 @@ owner-only.
 The owner and current chat administrators may use `/ban @username` in groups,
 including inactive groups, with the same authority checks as `/stop`. Accept
 exactly one `@username` using ASCII letters, digits and underscores, up to 32
-characters after `@`; invalid arguments receive an English usage message.
+characters after `@`; invalid arguments receive a Russian usage message.
 Resolve usernames without case sensitivity from each human sender's latest saved
 identity in this group. Ignore bot and channel identities; unknown, outdated or
-ambiguous names receive an English explanation asking for a new message from
+ambiguous names receive a Russian explanation asking for a new message from
 that participant. Store the ban by numeric user ID so a username change does not
 remove it. Repeated bans are idempotent.
 `/unban @username` removes the resolved sender's ban in the current group, using

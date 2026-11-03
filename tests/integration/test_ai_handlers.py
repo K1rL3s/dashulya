@@ -410,7 +410,7 @@ class TestAIHandler(_AIHandlerFixture):
     async def test_owner_can_still_use_group_commands(self) -> None:
         await self.message("/help@dashulya_bot", chat=GROUP)
         assert "/groups" in self.replies()[-1].text
-        assert "/clear works only in private chats" in self.replies()[-1].text
+        assert "/clear работает только в личных сообщениях" in self.replies()[-1].text
         self.dialogue.reply.assert_not_awaited()
 
     async def test_commands_media_bots_and_unaddressed_group_text_skip_ai(self) -> None:
@@ -661,7 +661,7 @@ class TestAIHandler(_AIHandlerFixture):
         await self.message("/clear")
         self.dialogue.clear.assert_awaited_once_with((42, None))
         self.dialogue.reply.assert_not_awaited()
-        assert "cleared" in self.replies()[-1].text
+        assert "Диалог очищен" in self.replies()[-1].text
 
     async def test_clear_in_groups_is_ignored(self) -> None:
         for chat_type in ("group", "supergroup"):
@@ -687,7 +687,7 @@ class TestAIHandler(_AIHandlerFixture):
         )
         assert "sk-secret" not in str(caplog.messages)
         assert "sk-secret" not in self.replies()[-1].text
-        assert "try again" in self.replies()[-1].text
+        assert "Попробуй ещё раз" in self.replies()[-1].text
         self.dialogue.reply.side_effect = None
         await self.message("Retry")
         assert self.replies()[-1].text == "Hello <Anna> 💋"
@@ -969,7 +969,7 @@ class TestGroupBlacklist(_AIHandlerFixture):
             self.requests.reset_mock()
             await self.message(command, chat=GROUP, sender=sender, **fields)
             assert [reply.text for reply in self.replies()] == [
-                "@renamed_boris can trigger my replies in this group again."
+                "Снова могу отвечать на обращения @renamed_boris в этой группе."
             ]
         self.requests.reset_mock()
         mention = [{"type": "mention", "offset": 0, "length": 13}]
@@ -1011,14 +1011,14 @@ class TestGroupBlacklist(_AIHandlerFixture):
             self.requests.reset_mock()
             await self.message(f"/unban {argument}".rstrip(), chat=GROUP)
             assert [reply.text for reply in self.replies()] == [
-                "Usage: /unban @username — provide one Telegram username."
+                "Формат: /unban @username — укажите один юзернейм в Telegram."
             ]
         self.requests.reset_mock()
         await self.message("/unban @missing_user", chat=GROUP)
         assert [reply.text for reply in self.replies()] == [
             (
-                "I couldn't identify @missing_user in this group's saved messages. "
-                "Ask them to send a message, then try again."
+                "Не удалось найти @missing_user в сохранённых сообщениях этой группы. "  # ruff: ignore[ambiguous-unicode-character-string]
+                "Попросите участника написать сообщение и попробуйте ещё раз."
             )
         ]
         self.requests.reset_mock()
@@ -1071,7 +1071,7 @@ class TestGroupBlacklist(_AIHandlerFixture):
         self.dialogue.reply.assert_not_awaited()
         await self.message("/unban @target_user", chat=GROUP)
         assert [reply.text for reply in self.replies()] == [
-            "@target_user can trigger my replies in this group again."
+            "Снова могу отвечать на обращения @target_user в этой группе."
         ]
         self.requests.reset_mock()
         await self.message(
@@ -1117,14 +1117,14 @@ class TestGroupBlacklist(_AIHandlerFixture):
             await self.message(f"/ban @{username}", chat=GROUP)
             assert [reply.text for reply in self.replies()] == [
                 (
-                    f"I couldn't identify @{username} in this group's saved messages. "
-                    "Ask them to send a message, then try again."
+                    f"Не удалось найти @{username} в сохранённых сообщениях этой группы. "  # ruff: ignore[ambiguous-unicode-character-string]
+                    "Попросите участника написать сообщение и попробуйте ещё раз."
                 )
             ]
         await self.message("/ban @new_name", chat=GROUP)
         assert (
             self.replies()[-1].text
-            == "@new_name can no longer trigger my replies in this group."
+            == "Больше не буду отвечать на обращения @new_name в этой группе."
         )
 
     async def test_ban_requires_current_chat_authority_and_ignores_private_commands(
@@ -1158,7 +1158,7 @@ class TestGroupBlacklist(_AIHandlerFixture):
         await self.message("/ban @target_user", chat=GROUP, sender={**USER, "id": 99})
         assert (
             self.replies()[-1].text
-            == "@target_user can no longer trigger my replies in this group."
+            == "Больше не буду отвечать на обращения @target_user в этой группе."
         )
         self.administrators[-123] = []
         self.requests.reset_mock()
@@ -1199,7 +1199,7 @@ class TestGroupBlacklist(_AIHandlerFixture):
         await self.message("/ban @target_user", chat=GROUP)
         assert (
             self.replies()[-1].text
-            == "@target_user can no longer trigger my replies in this group."
+            == "Больше не буду отвечать на обращения @target_user в этой группе."
         )
 
     async def test_banned_owner_keeps_private_access_and_group_control_commands(
@@ -1221,9 +1221,9 @@ class TestGroupBlacklist(_AIHandlerFixture):
         await self.message("Private hello", sender=owner)
         assert self.replies()[-1].chat_id == 42
         await self.message("/stop", chat=GROUP, sender=owner)
-        assert "Replies paused" in self.replies()[-1].text
+        assert "Мои ответы в этой группе приостановлены" in self.replies()[-1].text
         await self.message("/start", chat=GROUP, sender=owner)
-        assert "active in this group" in self.replies()[-1].text
+        assert "отвечаю в этой группе" in self.replies()[-1].text
 
     async def test_invalid_ban_arguments_show_usage_without_blocking_the_user(
         self,
@@ -1244,7 +1244,7 @@ class TestGroupBlacklist(_AIHandlerFixture):
                 f"/ban {argument}".rstrip(), chat=GROUP, sender={**USER, "id": 100}
             )
             assert [reply.text for reply in self.replies()] == [
-                "Usage: /ban @username — provide one Telegram username."
+                "Формат: /ban @username — укажите один юзернейм в Telegram."
             ]
         self.requests.reset_mock()
         await self.message(
@@ -1276,7 +1276,7 @@ class TestGroupBlacklist(_AIHandlerFixture):
             self.requests.reset_mock()
             await self.message(command, chat=chat, sender=sender, **fields)
             assert [reply.text for reply in self.replies()] == [
-                "@boris_test can no longer trigger my replies in this group."
+                "Больше не буду отвечать на обращения @boris_test в этой группе."
             ]
         await self.message("/start", chat=chat)
         self.requests.reset_mock()
@@ -1347,7 +1347,7 @@ class TestGroupActivation(_AIHandlerFixture):
         assert self.replies() == []
         await self.message("/stop", chat=GROUP, sender={**USER, "id": 99})
         assert len(self.replies()) == 1
-        assert "Replies paused in this group" in self.replies()[0].text
+        assert "Мои ответы в этой группе приостановлены" in self.replies()[0].text
         await self.message("/start", chat=GROUP)
         self.administrators[-123] = []
         self.requests.reset_mock()
@@ -1398,7 +1398,7 @@ class TestGroupActivation(_AIHandlerFixture):
         self.requests.reset_mock()
         await self.message("/stop", chat=GROUP)
         assert len(self.replies()) == 1
-        assert "Replies paused in this group" in self.replies()[0].text
+        assert "Мои ответы в этой группе приостановлены" in self.replies()[0].text
 
     @pytest.mark.parametrize("sender_chat_type", ["channel", "supergroup"])
     async def test_stop_from_another_sender_chat_does_not_grant_admin_access(
@@ -1433,7 +1433,7 @@ class TestGroupActivation(_AIHandlerFixture):
         self.requests.reset_mock()
         await self.message(command, chat=GROUP, sender=anonymous, sender_chat=GROUP)
         assert len(self.replies()) == 1
-        assert "Replies paused in this group" in self.replies()[0].text
+        assert "Мои ответы в этой группе приостановлены" in self.replies()[0].text
         self.requests.reset_mock()
         await self.message("/start", chat=GROUP, sender=anonymous, sender_chat=GROUP)
         await self.message(
@@ -1464,7 +1464,7 @@ class TestGroupActivation(_AIHandlerFixture):
         self.requests.reset_mock()
         await self.message("/stop@dashulya_bot", chat=chat, sender={**USER, "id": 99})
         assert len(self.replies()) == 1
-        assert "Replies paused in this group" in self.replies()[0].text
+        assert "Мои ответы в этой группе приостановлены" in self.replies()[0].text
         self.requests.reset_mock()
         await self.message("/start", chat=chat, sender={**USER, "id": 99})
         await self.message(
@@ -1508,7 +1508,7 @@ class TestGroupActivation(_AIHandlerFixture):
         self.requests.reset_mock()
         await self.message("/stop", chat=GROUP)
         assert len(self.replies()) == 1
-        assert "Replies paused in this group" in self.replies()[0].text
+        assert "Мои ответы в этой группе приостановлены" in self.replies()[0].text
 
     async def test_private_stop_and_stop_for_another_bot_are_ignored(self) -> None:
         await self.message("/start", chat=GROUP)
@@ -1524,15 +1524,16 @@ class TestGroupActivation(_AIHandlerFixture):
         )
         assert self.replies()[-1].text == "Hello <Anna> 💋"
         await self.message("/stop", chat=GROUP)
-        assert "Replies paused in this group" in self.replies()[-1].text
+        assert "Мои ответы в этой группе приостановлены" in self.replies()[-1].text
 
     async def test_owner_stop_acknowledges_already_inactive_group(self) -> None:
         for text in ("/stop", "/stop@dashulya_bot"):
             await self.message(text, chat=GROUP)
         assert len(self.replies()) == 2
         assert all(
-            reply.text == "Replies paused in this group 💋\n"
-            "Message capture continues. Only my owner can enable replies again with /start."
+            reply.text == "Мои ответы в этой группе приостановлены 💋\n"
+            "Сообщения продолжают сохраняться. "
+            "Снова включить ответы может только мой владелец командой /start."
             for reply in self.replies()
         )
         self.dialogue.reply.assert_not_awaited()
@@ -1655,7 +1656,7 @@ class TestGroupActivation(_AIHandlerFixture):
         self.requests.assert_not_awaited()
         await self.message("/start@dashulya_bot", chat=GROUP, message_thread_id=7)
         assert await self.groups.is_active(GROUP["id"])
-        assert "active in this group" in self.replies()[-1].text
+        assert "отвечаю в этой группе" in self.replies()[-1].text
         self.dialogue.reply.assert_not_awaited()
         self.decision_agent.ask.assert_not_awaited()
         for sender in (USER, {**USER, "id": 99}):
@@ -1671,7 +1672,7 @@ class TestGroupActivation(_AIHandlerFixture):
         self,
     ) -> None:
         await self.message("/start")
-        assert "Hi!" in self.replies()[-1].text
+        assert "Привет!" in self.replies()[-1].text
         assert await self.groups.list_groups() == []
         await self.message("/start", chat={**GROUP, "id": -456})
         assert await self.groups.is_active(-456)
