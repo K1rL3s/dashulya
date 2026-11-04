@@ -6,7 +6,7 @@ from aiogram import BaseMiddleware, Bot
 from aiogram.enums import ChatMemberStatus, ChatType
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
-from aiogram.types import Message, TelegramObject
+from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from dashulya.domain.groups import GroupRegistry
 from dashulya.observability import exception_fields
@@ -41,8 +41,9 @@ class AccessMiddleware(BaseMiddleware):
             raise ValueError(error_message)
         self._owner_user_id = owner_user_id
         self._groups = groups
-        self._group_commands = Command("start", "stop", "ban", "unban")
-        self._admin_commands = Command("stop", "ban", "unban")
+        self._group_commands = Command("start", "stop", "ban", "unban", "settings")
+        self._admin_commands = Command("stop", "ban", "unban", "settings")
+        self._whisper_command = Command("whisper")
 
     async def __call__(
         self,
@@ -50,10 +51,30 @@ class AccessMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
+        if isinstance(event, CallbackQuery):
+            message = event.message
+            if (
+                event.from_user.is_bot
+                or not isinstance(message, Message)
+                or message.chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}
+                or (
+                    event.from_user.id != self._owner_user_id
+                    and not await _is_chat_admin(
+                        data["bot"], message.chat.id, event.from_user.id
+                    )
+                )
+            ):
+                await event.answer(
+                    "Настройки доступны владельцу бота и администраторам этой группы.",
+                    show_alert=True,
+                )
+                return None
+            return await handler(event, data)
         # This middleware is registered on the message observer.
         assert isinstance(event, Message)
         if (
             event.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
+            and event.ephemeral_message_id is None
             and event.sender_chat is not None
             and event.sender_chat.id == event.chat.id
             and await self._admin_commands(event, data["bot"])
@@ -61,13 +82,23 @@ class AccessMiddleware(BaseMiddleware):
             # Telegram identifies anonymous administrators by their own sender_chat.
             return await handler(event, data)
         sender = event.from_user
-        if sender is None or sender.is_bot:
+        if (
+            sender is None
+            or sender.is_bot
+            or (event.ephemeral_message_id is not None and event.sender_chat is not None)
+        ):
             return None
+        whisper = event.ephemeral_message_id is not None or bool(
+            event.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
+            and await self._whisper_command(event, data["bot"])
+        )
         if sender.id != self._owner_user_id:
             if event.chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
                 return None
-            # Chat administrators may pause replies and manage the group blacklist.
-            if (event.text or event.caption or "").lstrip().startswith("/"):
+            # Administrative commands remain available independently of reply access.
+            if not whisper and (event.text or event.caption or "").lstrip().startswith(
+                "/"
+            ):
                 bot = data["bot"]
                 if not await self._admin_commands(event, bot):
                     return None
@@ -76,13 +107,24 @@ class AccessMiddleware(BaseMiddleware):
                 return await handler(event, data)
         if (
             event.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
+            and not whisper
             and sender.id == self._owner_user_id
             and await self._group_commands(event, data["bot"])
         ):
             return await handler(event, data)
-        if event.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP} and (
-            not await self._groups.is_active(event.chat.id)
-            or await self._groups.is_banned(event.chat.id, sender.id)
-        ):
-            return None
+        if event.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+            group = await self._groups.get(event.chat.id)
+            if (
+                group is None
+                or not group.active
+                or await self._groups.is_banned(event.chat.id, sender.id)
+            ):
+                return None
+            audience = group.whisper_audience if whisper else group.reply_audience
+            if audience == "disabled" or (
+                audience == "admins"
+                and sender.id != self._owner_user_id
+                and not await _is_chat_admin(data["bot"], event.chat.id, sender.id)
+            ):
+                return None
         return await handler(event, data)

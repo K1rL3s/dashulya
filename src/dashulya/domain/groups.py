@@ -1,5 +1,8 @@
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
+
+type ReplyAudience = Literal["all", "admins"]
+type WhisperAudience = Literal["all", "admins", "disabled"]
 
 
 @dataclass(frozen=True)
@@ -8,6 +11,8 @@ class Group:
     title: str
     username: str | None = None
     active: bool = False
+    reply_audience: ReplyAudience = "all"
+    whisper_audience: WhisperAudience = "all"
 
 
 class GroupRepository(Protocol):
@@ -18,6 +23,14 @@ class GroupRepository(Protocol):
     async def forget(self, chat_id: int) -> None: ...
 
     async def list_groups(self) -> list[Group]: ...
+
+    async def get(self, chat_id: int) -> Group | None: ...
+
+    async def set_reply_audience(self, chat_id: int, audience: ReplyAudience) -> None: ...
+
+    async def set_whisper_audience(
+        self, chat_id: int, audience: WhisperAudience
+    ) -> None: ...
 
     async def activate(self, chat_id: int) -> None: ...
 
@@ -61,6 +74,15 @@ class GroupRegistry:
     async def activate(self, chat_id: int) -> None:
         await self._store.activate(chat_id)
 
+    async def get(self, chat_id: int) -> Group | None:
+        return await self._store.get(chat_id)
+
+    async def set_reply_audience(self, chat_id: int, audience: ReplyAudience) -> None:
+        await self._store.set_reply_audience(chat_id, audience)
+
+    async def set_whisper_audience(self, chat_id: int, audience: WhisperAudience) -> None:
+        await self._store.set_whisper_audience(chat_id, audience)
+
     async def deactivate(self, chat_id: int) -> None:
         await self._store.deactivate(chat_id)
 
@@ -96,6 +118,12 @@ class GroupRegistry:
                 if group.active
                 else " — ответы выключены (отправь там /start)"
             )
+            if group.reply_audience == "admins":
+                line += "; обычные обращения — только администраторам"
+            if group.whisper_audience == "admins":
+                line += "; шёпот — только администраторам"
+            elif group.whisper_audience == "disabled":
+                line += "; шёпот выключен"
             # Leave room below Telegram's 4096-character limit, including emoji.
             if len((text + line).encode("utf-16-le")) > 8000:
                 messages.append(text)

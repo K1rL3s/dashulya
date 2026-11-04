@@ -1,5 +1,5 @@
 from dashulya.database import Database
-from dashulya.domain.groups import Group
+from dashulya.domain.groups import Group, ReplyAudience, WhisperAudience
 
 
 class GroupStore:
@@ -11,18 +11,40 @@ class GroupStore:
     ) -> None:
         async with self.database.connection() as connection, connection.transaction():
             active = False
+            reply_audience = "all"
+            whisper_audience = "all"
+            previous = None
             if previous_chat_id is not None:
                 cursor = await connection.execute(
-                    "SELECT active FROM groups WHERE chat_id=%s FOR UPDATE",
+                    "SELECT active,reply_audience,whisper_audience "
+                    "FROM groups WHERE chat_id=%s FOR UPDATE",
                     (previous_chat_id,),
                 )
                 previous = await cursor.fetchone()
                 active = previous is not None and previous["active"]
+                if previous is not None:
+                    reply_audience = previous["reply_audience"]
+                    whisper_audience = previous["whisper_audience"]
             await connection.execute(
-                """INSERT INTO groups (chat_id,title,username,active) VALUES (%s,%s,%s,%s)
+                """INSERT INTO groups
+                    (chat_id,title,username,active,reply_audience,whisper_audience)
+                VALUES (%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(chat_id) DO UPDATE SET title=excluded.title,
-                    username=excluded.username,active=groups.active OR excluded.active""",
-                (group.chat_id, group.title, group.username, active),
+                    username=excluded.username,active=groups.active OR excluded.active,
+                    reply_audience=CASE WHEN %s THEN excluded.reply_audience
+                        ELSE groups.reply_audience END,
+                    whisper_audience=CASE WHEN %s THEN excluded.whisper_audience
+                        ELSE groups.whisper_audience END""",
+                (
+                    group.chat_id,
+                    group.title,
+                    group.username,
+                    active,
+                    reply_audience,
+                    whisper_audience,
+                    previous is not None,
+                    previous is not None,
+                ),
             )
             if previous_chat_id is not None and previous_chat_id != group.chat_id:
                 await connection.execute(
@@ -44,10 +66,29 @@ class GroupStore:
             cursor = await connection.execute(
                 "SELECT * FROM groups ORDER BY lower(title),chat_id"
             )
-            return [
-                Group(row["chat_id"], row["title"], row["username"], row["active"])
-                for row in await cursor.fetchall()
-            ]
+            return [Group(**row) for row in await cursor.fetchall()]
+
+    async def get(self, chat_id: int) -> Group | None:
+        async with self.database.connection() as connection:
+            cursor = await connection.execute(
+                "SELECT * FROM groups WHERE chat_id=%s", (chat_id,)
+            )
+            row = await cursor.fetchone()
+            return Group(**row) if row is not None else None
+
+    async def set_reply_audience(self, chat_id: int, audience: ReplyAudience) -> None:
+        async with self.database.connection() as connection:
+            await connection.execute(
+                "UPDATE groups SET reply_audience=%s WHERE chat_id=%s",
+                (audience, chat_id),
+            )
+
+    async def set_whisper_audience(self, chat_id: int, audience: WhisperAudience) -> None:
+        async with self.database.connection() as connection:
+            await connection.execute(
+                "UPDATE groups SET whisper_audience=%s WHERE chat_id=%s",
+                (audience, chat_id),
+            )
 
     async def activate(self, chat_id: int) -> None:
         async with self.database.connection() as connection:

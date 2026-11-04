@@ -87,6 +87,7 @@ records the storage decision.
 | `/groups` | List the groups she knows about |
 | `/start` | Meet Dashulya; activate replies in the current group |
 | `/stop` | Owner or chat admins pause replies in the current group; keep saving messages |
+| `/settings` | Owner or chat admins independently select who can use ordinary replies and whispers |
 | `/ban @username` | Owner or chat admins stop a user from triggering replies in this group |
 | `/unban @username` | Owner or chat admins restore a user's ability to trigger replies in this group |
 
@@ -94,10 +95,10 @@ Bot service messages are in Russian. `/help` groups commands for the private
 conversation, group management and participant restrictions.
 
 Private conversations and commands are available only to the configured owner,
-except group `/stop`, `/ban` and `/unban`, which are also available to that group's administrators.
+except group `/stop`, `/ban`, `/unban` and `/settings`, which are also available to that group's administrators.
 Every group starts inactive. The owner enables replies with `/start` (or
 `/start@<bot_username>`) in that group. While inactive, the owner can use `/start`,
-`/stop`, `/ban` and `/unban`; chat administrators can use `/stop`, `/ban` and `/unban`. Sending `/start`
+`/stop`, `/ban`, `/unban` and `/settings`; chat administrators can use `/stop`, `/ban`, `/unban` and `/settings`. Sending `/start`
 privately or in another group does not activate it. `/groups` shows each
 group's activation status. Activation survives restarts, name changes and
 supergroup migration; removing and re-adding the bot requires a new `/start`.
@@ -106,6 +107,16 @@ The owner or a chat administrator can pause replies in that group, across topics
 with `/stop` or `/stop@<bot_username>`. Only the owner can resume with `/start`.
 `/stop` works only in group chats; repeating it confirms the pause.
 Group tracking, message capture and indexing continue while replies are inactive.
+
+Use `/settings` in a group to choose the audience independently for ordinary
+replies (`all` or `admins`) and `/whisper` (`all`, `admins` or `disabled`). For
+example, only administrators can ask publicly while everyone can whisper.
+Both default to everyone; the configured bot owner is also allowed in `admins`
+mode. The blacklist and group pause apply to both modes, and disabling whispers
+also blocks the owner. Settings work across topics, persist through restarts and
+supergroup migration, and can be changed while paused. `/start` resumes with the
+saved settings. Removing and re-adding the bot restores defaults. Button presses
+check the presser's current rights in that group.
 
 Administrator rights are checked against Telegram's current list for that chat;
 failed checks deny access. Anonymous administrators can use `/stop`, `/ban` and `/unban` when Telegram's

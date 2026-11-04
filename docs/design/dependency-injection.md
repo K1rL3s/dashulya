@@ -93,7 +93,7 @@ from all participants, owner-private messages and successful deliveries use
 actual Telegram IDs; other private senders are excluded. `TelegramProvider`
 attaches outgoing capture to the shared bot session.
 It supplies `AccessMiddleware` with the owner ID and `GroupRegistry`.
-Private messages, activation and other commands stay owner-only. `/stop`, `/ban` and `/unban`
+Private messages, activation and other commands stay owner-only. `/stop`, `/ban`, `/unban` and `/settings`
 also admit the current chat's administrators, verified through the event's Telegram
 bot using `getChatAdministrators`. Failed lookups deny access; named administrator
 rights are not cached. Telegram's authenticated `sender_chat` for the current
@@ -104,7 +104,7 @@ unauthorized private chats remain silent. Capture and group tracking still
 precede this gate. Activation grants dialogue access within the group without
 expanding memory authority.
 The same gate checks group activation through `GroupRegistry`; inactive groups
-admit the human owner's `/start` and owner/admin `/stop`, `/ban` and `/unban`. `/start` and
+admit the human owner's `/start` and owner/admin `/stop`, `/ban`, `/unban` and `/settings`. `/start` and
 `/stop` persist the current group's activation or deactivation in PostgreSQL
 before confirming it.
 Ordinary observations preserve activation, migration
@@ -381,3 +381,11 @@ attempting pending preparation before accessing Telegram. With
 `HEALTHCHECK_PATH` configured, startup removes a stale marker, verifies Telegram
 identity and writes the current PID before polling. Shutdown removes the marker
 and closes the container. Readiness verifies startup, not embedding coverage.
+
+Group records also persist independent ordinary-reply and whisper audiences.
+`AccessMiddleware` applies the selected audience before addressing or generation,
+with group activation and the blacklist taking precedence. The same middleware
+authorizes settings callbacks using the actual presser and panel group;
+`bot/handlers/settings.py` owns panel rendering and typed callback routing.
+Audience changes update only their own column. Migration transfers both values
+from the old group when present; ordinary observations preserve the target values.

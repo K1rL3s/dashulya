@@ -4,19 +4,19 @@
 
 Authorize private messages, `/start` and other owner commands using the actual
 sender's numeric `from_user.id == OWNER_USER_ID`. Forwarded identities and
-authorship bindings grant no access. Group `/stop`, `/ban` and `/unban` are also available to the current chat's creator
+authorship bindings grant no access. Group `/stop`, `/ban`, `/unban` and `/settings` are also available to the current chat's creator
 and administrators, checked with `getChatAdministrators` for that chat on each
 request. A failed or timed-out lookup denies access and logs a redacted failure;
 the configured owner's commands do not depend on this lookup.
 
-Anonymous administrators may use `/stop`, `/ban` and `/unban` only when Telegram's authenticated
+Anonymous administrators may use `/stop`, `/ban`, `/unban` and `/settings` only when Telegram's authenticated
 `sender_chat.id` equals the current group's numeric ID. A forwarded identity or
 another sender chat grants no authority. Other bot senders, missing senders and
 unauthorized users are silently ignored before command execution or model
 invocation.
 
 After the owner activates a group, human participants outside its blacklist may
-invoke group dialogue there. Addressing rules still apply. Other group commands remain
+invoke group dialogue there, subject to its reply audiences. Addressing rules still apply. Other group commands remain
 owner-only.
 
 The owner and current chat administrators may use `/ban @username` in groups,
@@ -47,10 +47,37 @@ chat administrator can use `/stop` to pause replies throughout the current group
 across topics. The command confirms the pause even if the group is already
 inactive. `/stop` is group-only; `/start`
 resumes group dialogue. Both activation and deactivation persist across restarts.
-While inactive, the owner may use `/start`, `/stop`, `/ban` and `/unban`, and chat administrators
-may use `/stop`, `/ban` and `/unban`; other commands, addressing decisions and reply generation remain
+While inactive, the owner may use `/start`, `/stop`, `/ban`, `/unban` and `/settings`, and chat administrators
+may use `/stop`, `/ban`, `/unban` and `/settings`; other commands, addressing decisions and reply generation remain
 silent, including the owner's. Activation grants group dialogue access to human
 participants outside the blacklist.
+
+### Per-group reply audiences
+
+`/settings` opens an inline panel in the current group, including while paused.
+The owner and current group administrators may open it and change its settings.
+Anonymous administrators may open the panel using the same authenticated
+`sender_chat` rule as `/stop`; button presses use the actual human presser's
+current rights. Every press checks authority again in the panel's group, without
+caching administrators. Failed lookups deny the change. No private-chat or
+activation authority is granted.
+
+Ordinary replies have `reply_audience=all|admins`; whispers independently have
+`whisper_audience=all|admins|disabled`. Both default to `all`, including for
+existing groups on upgrade. `admins` includes the group creator, administrators
+and the configured human bot owner. `disabled` blocks whispers even for the
+owner. Activation and the blacklist take precedence over either audience;
+authorized administrative commands remain available. Apply these checks before
+addressing classification, image downloads or generation. Denied requests stay
+silent. Ordinary addressing rules still apply to allowed public requests.
+
+Both settings cover all topics of one group and leave other groups and private
+access unchanged. `/stop` pauses both kinds of reply; `/start` resumes with the
+saved audiences. Metadata refresh, restart and supergroup migration preserve
+the settings; departure removes them, so rejoining restores the default audiences
+and requires owner activation. `/groups` shows nondefault audience restrictions.
+Capture and shared memory continue to include public originals from participants
+who cannot invoke replies; hidden questions remain excluded from shared history.
 
 ## Routing and capture
 

@@ -279,6 +279,7 @@ class TestGroupTracking:
 
     async def test_polling_subscribes_to_membership_updates(self) -> None:
         assert self.dispatcher.resolve_used_update_types() == [
+            "callback_query",
             "edited_message",
             "message",
             "my_chat_member",

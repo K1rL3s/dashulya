@@ -1,12 +1,41 @@
 import re
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import Message
+from aiogram.types import BotCommand, BotCommandScopeAllGroupChats, Message
 from dishka.integrations.aiogram import FromDishka, inject
 
 from dashulya.bot.middlewares.group_tracking import GROUP_TYPES
 from dashulya.domain.groups import GroupRegistry
+
+
+async def register_group_commands(bot: Bot) -> None:
+    await bot.set_my_commands(
+        [
+            BotCommand(command="help", description="Показать справку"),
+            BotCommand(
+                command="settings",
+                description="Настроить обычные ответы и шёпот (владелец или администратор)",
+            ),
+            BotCommand(command="start", description="Включить ответы (владелец)"),
+            BotCommand(
+                command="stop",
+                description="Приостановить ответы (владелец или администратор)",
+            ),
+            BotCommand(
+                command="ban",
+                description="Запретить участнику вызывать ответы (владелец или администратор)",
+            ),
+            BotCommand(
+                command="unban",
+                description="Разрешить участнику вызывать ответы (владелец или администратор)",
+            ),
+            BotCommand(
+                command="groups", description="Показать известные группы (владелец)"
+            ),
+        ],
+        scope=BotCommandScopeAllGroupChats(),
+    )
 
 
 @inject
@@ -72,6 +101,7 @@ async def show_help(message: Message) -> None:
         "/help — показать эту справку\n"
         "/clear — начать личный диалог заново\n\n"
         "Управление группами\n"
+        "/settings — выбрать аудиторию обычных ответов и шёпота в текущей группе\n"
         "/groups — показать известные мне группы и статус ответов\n"
         "/start — познакомиться в личке или включить ответы в текущей группе\n"
         "/stop — приостановить ответы в текущей группе\n\n"
@@ -83,7 +113,7 @@ async def show_help(message: Message) -> None:
         "/clear работает только в личных сообщениях.\n\n"
         "Личный диалог и команды доступны моему владельцу. "
         "Включить ответы в группе через /start может только он. "
-        "Команды /stop, /ban и /unban также доступны администраторам этой группы. "
+        "Команды /stop, /ban, /unban и /settings также доступны администраторам этой группы. "
         "Во время паузы сообщения продолжают сохраняться.\n\n"  # ruff: ignore[ambiguous-unicode-character-string]
         "Если подключена история чата, могу находить прошлые обсуждения "
         "и давать ссылки на исходные сообщения."
@@ -92,6 +122,7 @@ async def show_help(message: Message) -> None:
 
 def create_router() -> Router:
     router = Router(name=__name__)
+    router.startup.register(register_group_commands)
     router.message.register(start, CommandStart())
     router.message.register(stop, Command("stop"), F.chat.type.in_(GROUP_TYPES))
     router.message.register(
