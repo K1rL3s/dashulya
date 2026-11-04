@@ -57,10 +57,16 @@ async def start(message: Message, groups: FromDishka[GroupRegistry]) -> None:
 @inject
 async def stop(message: Message, groups: FromDishka[GroupRegistry]) -> None:
     await groups.deactivate(message.chat.id)
+    group = await groups.get(message.chat.id)
+    capture_status = (
+        "Сообщения продолжают сохраняться. "
+        if group is not None and group.capture_enabled
+        else "Сообщения начнут сохраняться после первого /start моего владельца. "
+    )
     await message.answer(
         "Мои ответы в этой группе приостановлены 💋\n"
-        "Сообщения продолжают сохраняться. "
-        "Снова включить ответы может только мой владелец командой /start."
+        + capture_status
+        + "Снова включить ответы может только мой владелец командой /start."
     )
 
 
@@ -114,7 +120,8 @@ async def show_help(message: Message) -> None:
         "Личный диалог и команды доступны моему владельцу. "
         "Включить ответы в группе через /start может только он. "
         "Команды /stop, /ban, /unban и /settings также доступны администраторам этой группы. "
-        "Во время паузы сообщения продолжают сохраняться.\n\n"  # ruff: ignore[ambiguous-unicode-character-string]
+        "Сообщения группы сохраняются только после первого /start моего владельца, "
+        "в том числе во время последующих пауз.\n\n"
         "Если подключена история чата, могу находить прошлые обсуждения "
         "и давать ссылки на исходные сообщения."
     )

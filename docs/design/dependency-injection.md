@@ -92,6 +92,10 @@ Incoming/outgoing capture share conversion in `bot/messages.py`. Group messages
 from all participants, owner-private messages and successful deliveries use
 actual Telegram IDs; other private senders are excluded. `TelegramProvider`
 attaches outgoing capture to the shared bot session.
+Both capture middleware instances receive `GroupRegistry` and require the
+group's persisted `capture_enabled` permission before processing originals or
+responses. The first owner `/start` enables it atomically with replies; `/stop`
+leaves it set. Group observations and migration preserve it; departure removes it.
 It supplies `AccessMiddleware` with the owner ID and `GroupRegistry`.
 Private messages, activation and other commands stay owner-only. `/stop`, `/ban`, `/unban` and `/settings`
 also admit the current chat's administrators, verified through the event's Telegram

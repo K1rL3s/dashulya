@@ -374,7 +374,7 @@ class TestAIHandler(_AIHandlerFixture):
         self.decision_agent.ask.assert_not_awaited()
         self.requests.assert_not_awaited()
         assert await self.groups.list_groups() == [
-            Group(GROUP["id"], GROUP["title"], active=True)
+            Group(GROUP["id"], GROUP["title"], active=True, capture_enabled=True)
         ]
 
     async def test_forwarding_from_owner_does_not_grant_access(self) -> None:
@@ -1532,7 +1532,7 @@ class TestGroupActivation(_AIHandlerFixture):
         assert len(self.replies()) == 2
         assert all(
             reply.text == "Мои ответы в этой группе приостановлены 💋\n"
-            "Сообщения продолжают сохраняться. "
+            "Сообщения начнут сохраняться после первого /start моего владельца. "
             "Снова включить ответы может только мой владелец командой /start."
             for reply in self.replies()
         )
@@ -1639,7 +1639,7 @@ class TestGroupActivation(_AIHandlerFixture):
         self.dialogue.reply.assert_not_awaited()
         self.decision_agent.ask.assert_not_awaited()
         self.get_file.assert_not_awaited()
-        self.recorder.record.assert_awaited()
+        self.recorder.record.assert_not_awaited()
         assert not await self.groups.is_active(GROUP["id"])
 
     async def test_only_actual_human_owner_can_activate_group(self) -> None:

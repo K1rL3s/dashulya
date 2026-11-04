@@ -374,7 +374,7 @@ class TestGroupPersistence:
         await registry.membership(Group(-123, "Renamed group", "renamed"), present=True)
         assert await registry.is_active(-123)
         assert await reopened.list_groups() == [
-            Group(-123, "Renamed group", "renamed", active=True)
+            Group(-123, "Renamed group", "renamed", active=True, capture_enabled=True)
         ]
         await registry.membership(Group(-123, "Renamed group"), present=False)
         await registry.membership(Group(-123, "Renamed group"), present=True)

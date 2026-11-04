@@ -13,6 +13,7 @@ class Group:
     active: bool = False
     reply_audience: ReplyAudience = "all"
     whisper_audience: WhisperAudience = "all"
+    capture_enabled: bool = False
 
 
 class GroupRepository(Protocol):

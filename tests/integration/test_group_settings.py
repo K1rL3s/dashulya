@@ -314,6 +314,7 @@ class TestGroupSettings:
             active=False,
             reply_audience="admins",
             whisper_audience="disabled",
+            capture_enabled=True,
         )
         # Choosing the same value again must acknowledge even when Telegram refuses an identical edit.
         self.unchanged_panel = True
@@ -326,6 +327,7 @@ class TestGroupSettings:
             active=True,
             reply_audience="admins",
             whisper_audience="disabled",
+            capture_enabled=True,
         )
         await self.feed(
             "/groups", chat={"id": 42, "type": "private", "first_name": "Owner"}
@@ -397,6 +399,7 @@ async def test_group_audiences_survive_restart_and_metadata_refresh_in_their_gro
         active=True,
         reply_audience="admins",
         whisper_audience="disabled",
+        capture_enabled=True,
     )
     assert await reopened.get(-456) == Group(-456, "Group")
     assert await reopened.get(-999) is None
@@ -440,4 +443,6 @@ async def test_audience_upgrade_preserves_activation_and_defaults_to_everyone(
             "DELETE FROM schema_migrations WHERE name='0009_group_audiences.sql'"
         )
     await migrate(database_url)
-    assert await registry.get(-123) == Group(-123, "Existing group", active=True)
+    assert await registry.get(-123) == Group(
+        -123, "Existing group", active=True, capture_enabled=True
+    )

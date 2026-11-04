@@ -226,8 +226,14 @@ history/search records retain their structured representation.
 
 ## Incoming group messages
 
-Capture runs before owner authorization for every delivered group/supergroup
-message, including participants who cannot invoke the bot. Owner-private
+Capture runs before sender authorization, but only after the owner's first
+`/start` in that group/supergroup. Until then, skip incoming originals, edits,
+reply snapshots and outgoing messages, so they cannot create indexing work.
+The persisted capture permission is independent of active replies: subsequent
+`/stop` and `/start` do not disable it. Preserve it across metadata refresh,
+restart and supergroup migration, and reset it on departure. Upgrade grants it
+only to currently active groups; paused groups need one owner `/start`.
+After approval, capture includes participants who cannot invoke the bot. Owner-private
 messages are also captured; other private senders are excluded. Edited updates
 use the same recorder without invoking a reply. Service events are excluded.
 Text, captions and attachment types are stored, along with Telegram `file_id` and

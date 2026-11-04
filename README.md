@@ -44,8 +44,9 @@ and [Ostrikov's chat](https://t.me/aostrikov_agents_chat)
   rules; substantive questions still receive text.
 - **Find earlier discussions.** Recall saved originals by keywords and meaning,
   with original Telegram links and surrounding replies.
-- **Save received messages.** Persist group messages from all participants and
-  the owner's private messages, including edits and successfully delivered replies.
+- **Save received messages.** After the owner's first `/start` in a group, persist
+  its participants' messages, including edits and successfully delivered replies.
+  The owner's private messages are also saved.
 - **Inspect original history.** Read full sources, page through saved messages,
   resolve sender identities and count literal matches independently of embeddings.
   Reading a saved image message also supplies its picture or media preview from
@@ -106,7 +107,13 @@ Groups already known before this feature also start inactive after upgrading.
 The owner or a chat administrator can pause replies in that group, across topics,
 with `/stop` or `/stop@<bot_username>`. Only the owner can resume with `/start`.
 `/stop` works only in group chats; repeating it confirms the pause.
-Group tracking, message capture and indexing continue while replies are inactive.
+Before the owner's first `/start` in a group, received messages, edits, reply
+snapshots and outgoing responses are neither saved nor queued for indexing.
+Group metadata is still tracked. After that first activation, capture and
+indexing continue through every `/stop` and subsequent `/start`, across restarts
+and supergroup migration. Removing the bot resets this permission.
+On upgrade, currently active groups retain capture; paused groups need one
+owner `/start` because their prior activation was not recorded separately.
 
 Use `/settings` in a group to choose the audience independently for ordinary
 replies (`all` or `admins`) and `/whisper` (`all`, `admins` or `disabled`). For
@@ -448,7 +455,8 @@ For recording ordinary group messages and name-based addressing, make the bot
 an administrator, or
 [disable privacy mode](https://core.telegram.org/bots/features#privacy-mode)
 through @BotFather and re-add the bot. Telegram does not deliver other bots'
-messages to it. All received group participants' messages are saved, alongside
+messages to it. After the owner's first `/start`, received group participants'
+messages are saved, alongside
 owner-private messages and delivered replies; commands and replies remain
 restricted to the owner. Text, captions and basic attachment metadata are
 retained; passive capture does not download attachment contents. Authorized

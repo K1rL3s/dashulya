@@ -52,6 +52,13 @@ may use `/stop`, `/ban`, `/unban` and `/settings`; other commands, addressing de
 silent, including the owner's. Activation grants group dialogue access to human
 participants outside the blacklist.
 
+The owner's first `/start` also permanently enables message capture for that
+group. Before it, incoming messages, edits, reply snapshots and outgoing replies
+are not stored or queued for indexing. Later `/stop` and `/start` change replies
+only. Capture permission survives restart, metadata refresh and supergroup
+migration; departure removes it. On upgrade, only currently active groups can
+inherit capture permission; previously paused groups need one owner `/start`.
+
 ### Per-group reply audiences
 
 `/settings` opens an inline panel in the current group, including while paused.
@@ -93,11 +100,13 @@ message stay silent. A real direct address takes precedence over surrounding
 discussion about the bot.
 `/clear` resets the current private conversation.
 
-Group tracking and message capture run before sender access checks, including
-while a group is inactive. Passive messages update group metadata; membership
-updates also maintain the registry. Save received group messages from all
-participants, owner-private messages and successful deliveries; exclude other
-private senders. Index messages with background cached embeddings. Capture,
+Group tracking runs before sender access checks, including before activation.
+Message capture also precedes sender access, but requires the group's first
+owner activation and continues while replies are paused afterward. Passive
+messages update group metadata; membership updates also maintain the registry.
+In approved groups, save received messages from all participants and successful
+deliveries. Save owner-private messages; exclude other private senders.
+Index saved messages with background cached embeddings. Capture,
 edits and worker recovery follow the
 [incoming-message rules](chat-memory.md#incoming-group-messages).
 

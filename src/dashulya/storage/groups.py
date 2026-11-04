@@ -11,26 +11,29 @@ class GroupStore:
     ) -> None:
         async with self.database.connection() as connection, connection.transaction():
             active = False
+            capture_enabled = False
             reply_audience = "all"
             whisper_audience = "all"
             previous = None
             if previous_chat_id is not None:
                 cursor = await connection.execute(
-                    "SELECT active,reply_audience,whisper_audience "
+                    "SELECT active,capture_enabled,reply_audience,whisper_audience "
                     "FROM groups WHERE chat_id=%s FOR UPDATE",
                     (previous_chat_id,),
                 )
                 previous = await cursor.fetchone()
                 active = previous is not None and previous["active"]
                 if previous is not None:
+                    capture_enabled = previous["capture_enabled"]
                     reply_audience = previous["reply_audience"]
                     whisper_audience = previous["whisper_audience"]
             await connection.execute(
                 """INSERT INTO groups
-                    (chat_id,title,username,active,reply_audience,whisper_audience)
-                VALUES (%s,%s,%s,%s,%s,%s)
+                    (chat_id,title,username,active,capture_enabled,reply_audience,whisper_audience)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(chat_id) DO UPDATE SET title=excluded.title,
                     username=excluded.username,active=groups.active OR excluded.active,
+                    capture_enabled=groups.capture_enabled OR excluded.capture_enabled,
                     reply_audience=CASE WHEN %s THEN excluded.reply_audience
                         ELSE groups.reply_audience END,
                     whisper_audience=CASE WHEN %s THEN excluded.whisper_audience
@@ -40,6 +43,7 @@ class GroupStore:
                     group.title,
                     group.username,
                     active,
+                    capture_enabled,
                     reply_audience,
                     whisper_audience,
                     previous is not None,
@@ -93,7 +97,8 @@ class GroupStore:
     async def activate(self, chat_id: int) -> None:
         async with self.database.connection() as connection:
             await connection.execute(
-                "UPDATE groups SET active=TRUE WHERE chat_id=%s", (chat_id,)
+                "UPDATE groups SET active=TRUE,capture_enabled=TRUE WHERE chat_id=%s",
+                (chat_id,),
             )
 
     async def is_active(self, chat_id: int) -> bool:
