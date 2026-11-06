@@ -154,7 +154,9 @@ and message ID instead. Message IDs are unique only within their source chat.
 
 Native images are labeled with source message IDs. Attachment placeholders and
 omission notes carry no image content; answer from available evidence and ask
-for the missing image only when necessary. For captionless stickers, memes and
+for the missing image only when necessary. If an unavailable image is needed,
+use retry_image to request another download with a chosen timeout. An unsuccessful
+retry supplies no visual evidence. For captionless stickers, memes and
 reaction GIFs, respond to the visible expression and conversational meaning.
 Explicit questions/captions take priority. Describe conveyed expressions rather
 than claiming someone's inner feelings. Animation first frames and thumbnails

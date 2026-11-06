@@ -133,7 +133,10 @@ class TestImage:
             self.saved_image(2),
         ))
         assert images == (ImageAttachment(PNG, "image/png", 2), ImageOmission(1))
-        assert self.get_file.await_args_list == [call("photo-2"), call("photo-1")]
+        assert self.get_file.await_args_list == [
+            call("photo-2", request_timeout=10),
+            call("photo-1", request_timeout=10),
+        ]
         self.stream.assert_called_once()
 
     async def test_current_image_is_not_downloaded_twice_or_given_a_separate_budget(
@@ -182,7 +185,7 @@ class TestImage:
         barrier = asyncio.Barrier(3)
         started: list[str] = []
 
-        async def metadata(file_id: str) -> File:
+        async def metadata(file_id: str, **kwargs: Any) -> File:
             return File(
                 file_id=file_id,
                 file_unique_id=file_id,
@@ -216,7 +219,7 @@ class TestImage:
         release_slow = asyncio.Event()
         ready_downloaded = asyncio.Event()
 
-        async def metadata(file_id: str) -> File:
+        async def metadata(file_id: str, **kwargs: Any) -> File:
             if file_id == "photo-2":
                 slow_started.set()
                 await release_slow.wait()
@@ -262,7 +265,7 @@ class TestImage:
         release_slow = asyncio.Event()
         ready_downloaded = asyncio.Event()
 
-        async def metadata(file_id: str) -> File:
+        async def metadata(file_id: str, **kwargs: Any) -> File:
             if file_id == "photo-2":
                 await release_slow.wait()
                 raise TimeoutError
@@ -301,7 +304,7 @@ class TestImage:
         slow_started = asyncio.Event()
         release_slow = asyncio.Event()
 
-        async def metadata(file_id: str) -> File:
+        async def metadata(file_id: str, **kwargs: Any) -> File:
             slow_started.set()
             await release_slow.wait()
             return File(
@@ -335,7 +338,7 @@ class TestImage:
         older_started = asyncio.Event()
         barrier = asyncio.Barrier(2)
 
-        async def metadata(file_id: str) -> File:
+        async def metadata(file_id: str, **kwargs: Any) -> File:
             if file_id == "photo-2":
                 await older_started.wait()
             return File(
@@ -376,7 +379,7 @@ class TestImage:
         barrier = asyncio.Barrier(2)
         closed: set[str] = set()
 
-        async def metadata(file_id: str) -> File:
+        async def metadata(file_id: str, **kwargs: Any) -> File:
             return File(
                 file_id=file_id,
                 file_unique_id=file_id,
@@ -416,7 +419,7 @@ class TestImage:
         assert await self.images.load_context((saved,)) == (
             ImageAttachment(PNG, "image/png", 99),
         )
-        self.get_file.assert_awaited_once_with("photo")
+        self.get_file.assert_awaited_once_with("photo", request_timeout=10)
         self.stream.assert_called_once()
 
     async def test_failure_cache_expires_and_allows_a_new_download(self) -> None:
@@ -429,7 +432,7 @@ class TestImage:
         assert await loader.load(image_message(message_id=2)) == (
             ImageOmission(2, "unavailable"),
         )
-        self.get_file.assert_awaited_once_with("photo")
+        self.get_file.assert_awaited_once_with("photo", request_timeout=10)
         now = 31.0
         assert await loader.load(image_message(message_id=3)) == (
             ImageAttachment(PNG, "image/png", 3),
@@ -456,10 +459,10 @@ class TestImage:
             )
             assert isinstance((await loader.load(message))[0], ImageAttachment)
         assert self.get_file.await_args_list == [
-            call("a"),
-            call("b"),
-            call("c"),
-            call("b"),
+            call("a", request_timeout=10),
+            call("b", request_timeout=10),
+            call("c", request_timeout=10),
+            call("b", request_timeout=10),
         ]
         now = 301.0
         message = image_message(
@@ -501,7 +504,7 @@ class TestImage:
         started: set[str] = set()
         closed: set[str] = set()
 
-        async def metadata(file_id: str) -> File:
+        async def metadata(file_id: str, **kwargs: Any) -> File:
             return File(
                 file_id=file_id,
                 file_unique_id=file_id,
@@ -623,7 +626,7 @@ class TestImage:
         images = await self.images.load(message)
         assert isinstance(images[0], ImageAttachment)
         assert images[0].media_type == "image/png"
-        self.get_file.assert_awaited_once_with("doc")
+        self.get_file.assert_awaited_once_with("doc", request_timeout=10)
 
     async def test_rejects_unsupported_documents_and_nonimage_bytes(self) -> None:
         document = image_message(
@@ -697,14 +700,14 @@ class TestImage:
             )
             try:
                 await asyncio.wait_for(started.wait(), timeout=1)
-                elapsed = 30.0
+                elapsed = 10.0
                 # Let the due timer cancel its task, then let that task
                 # close the download and complete its public result.
                 for _ in range(20):
                     if task.done():
                         break
                     await asyncio.sleep(0)
-                assert task.done(), "Download exceeded its 30-second deadline"
+                assert task.done(), "Download exceeded its 10-second deadline"
                 if saved:
                     assert await task == (
                         ImageOmission(2, "unavailable"),
@@ -714,7 +717,12 @@ class TestImage:
                     assert await task == (ImageOmission(1, "unavailable"),)
                 assert self.closed
                 assert self.get_file.await_args_list == (
-                    [call("photo-2"), call("photo-1")] if saved else [call("photo")]
+                    [
+                        call("photo-2", request_timeout=10),
+                        call("photo-1", request_timeout=10),
+                    ]
+                    if saved
+                    else [call("photo", request_timeout=10)]
                 )
             finally:
                 task.cancel()
@@ -758,7 +766,8 @@ class TestImage:
                                 "sticker" if sticker_format != "static" else None
                             )
                             self.get_file.assert_awaited_once_with(
-                                "sticker" if sticker_format == "static" else "thumbnail"
+                                "sticker" if sticker_format == "static" else "thumbnail",
+                                request_timeout=10,
                             )
 
     async def test_saved_oversized_animations_and_stickers_use_thumbnail_size(
@@ -782,7 +791,7 @@ class TestImage:
                     self.saved_media(image_message(photo=None, **fields)),
                 ))
                 assert isinstance(images[0], ImageAttachment)
-                self.get_file.assert_awaited_once_with("thumbnail")
+                self.get_file.assert_awaited_once_with("thumbnail", request_timeout=10)
 
     async def test_saved_animations_and_gif_documents_decode_the_original_first_frame(
         self,
@@ -822,7 +831,7 @@ class TestImage:
                 assert images[0].media_type == "image/jpeg"
                 assert images[0].first_frame
                 assert images[0].preview_kind == "animation"
-                self.get_file.assert_awaited_once_with(expected_id)
+                self.get_file.assert_awaited_once_with(expected_id, request_timeout=10)
 
     async def test_saved_undecodable_animation_uses_thumbnail_or_omission(self) -> None:
         for thumbnail in (THUMBNAIL, None):
@@ -885,7 +894,10 @@ class TestImage:
         )
         assert isinstance(images[0], ImageAttachment)
         assert images[1] == ImageOmission(1)
-        assert self.get_file.await_args_list == [call("photo"), call("thumbnail")]
+        assert self.get_file.await_args_list == [
+            call("photo", request_timeout=10),
+            call("thumbnail", request_timeout=10),
+        ]
         self.stream.assert_called_once()
 
     async def test_oversized_animation_falls_back_to_thumbnail_ignoring_legacy_document(
@@ -913,7 +925,7 @@ class TestImage:
                 )
                 assert isinstance(images[0], ImageAttachment)
                 assert images[0].preview_kind == "animation"
-                self.get_file.assert_awaited_once_with("thumbnail")
+                self.get_file.assert_awaited_once_with("thumbnail", request_timeout=10)
 
     async def test_animation_without_thumbnail_attempts_the_original(self) -> None:
         self.chunks = [animation_bytes()]
@@ -929,7 +941,7 @@ class TestImage:
                 },
             )
         )
-        self.get_file.assert_awaited_once_with("animation")
+        self.get_file.assert_awaited_once_with("animation", request_timeout=10)
         assert len(images) == 1
         assert isinstance(images[0], ImageAttachment)
         assert images[0].message_id == 1
@@ -975,13 +987,16 @@ class TestImage:
         assert images[0].data == PNG
         assert images[0].media_type == "image/png"
         assert images[0].preview_kind == "animation"
-        assert self.get_file.await_args_list == [call("gif"), call("thumbnail")]
+        assert self.get_file.await_args_list == [
+            call("gif", request_timeout=10),
+            call("thumbnail", request_timeout=10),
+        ]
         assert not images[0].first_frame
         self.get_file.reset_mock()
         assert await self.images.load(
             image_message(photo=None, document={**document, "thumbnail": None})
         ) == (ImageOmission(1, "decode_failed"),)
-        self.get_file.assert_awaited_once_with("gif")
+        self.get_file.assert_awaited_once_with("gif", request_timeout=10)
 
     async def test_gif_document_decodes_original_without_a_thumbnail(self) -> None:
         self.chunks = [animation_bytes(format="gif")]
@@ -999,7 +1014,7 @@ class TestImage:
         assert len(images) == 1
         assert isinstance(images[0], ImageAttachment)
         assert images[0].first_frame
-        self.get_file.assert_awaited_once_with("gif")
+        self.get_file.assert_awaited_once_with("gif", request_timeout=10)
 
     async def test_oversized_animation_preview_skips_download(self) -> None:
         images = await self.images.load(
@@ -1029,7 +1044,7 @@ class TestImage:
         assert images[0].message_id == 1
         assert images[0].preview_kind == "animation"
         assert images[0].first_frame
-        self.get_file.assert_awaited_once_with("animation")
+        self.get_file.assert_awaited_once_with("animation", request_timeout=10)
         self.get_file.reset_mock()
         for changed in (
             {"chat": {"id": 43, "type": "private"}},

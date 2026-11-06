@@ -10,7 +10,13 @@ from dishka_ag2 import FromDishka, inject
 from pydantic import Field
 
 from dashulya.ai.message_format import external_input
-from dashulya.domain.memory import ContextImages, HistoryReader, OriginalMessage
+from dashulya.domain.memory import (
+    ContextImages,
+    HistoryReader,
+    MemoryMessage,
+    OriginalMessage,
+    message_source_id,
+)
 from dashulya.domain.messages import ImageAttachment, ImageOmission
 
 
@@ -19,8 +25,97 @@ class HistoryImageTurn:
     remaining_bytes: int
     request_message_id: int | None
     images: ContextImages
+    chat_id: int
+    sources: dict[int, MemoryMessage | OriginalMessage] = field(default_factory=dict)
+    attempts: dict[int, int] = field(default_factory=dict)
     seen: set[str] = field(default_factory=set)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    async def retry(
+        self, message_id: int, timeout_seconds: int, history: HistoryReader
+    ) -> ToolResult:
+        async with self.lock:
+            if self.attempts.get(message_id, 0) >= 3:
+                return ToolResult(
+                    external_input(
+                        json.dumps({
+                            "message_id": message_id,
+                            "attempts": 3,
+                            "remaining_attempts": 0,
+                            "status": "retry_limit_reached",
+                        }),
+                        "memory",
+                    )
+                )
+            attempt = self.attempts.get(message_id, 0) + 1
+            self.attempts[message_id] = attempt
+            data: dict[str, Any] = {
+                "message_id": message_id,
+                "attempts": attempt,
+                "remaining_attempts": 3 - attempt,
+            }
+            source = self.sources.get(message_id)
+            if source is None:
+                result = await history.query(
+                    chat=f"telegram:{self.chat_id}",
+                    min_message_id=message_id,
+                    max_message_id=message_id,
+                    limit=1,
+                    parent_hops=0,
+                )
+                if result["messages"]:
+                    source = await history.original(result["messages"][0]["source_id"])
+                    if source is not None:
+                        self.sources[message_id] = source
+            loaded: tuple[ImageAttachment | ImageOmission, ...] = ()
+            if source is None:
+                data["status"] = "not_found"
+            elif source.image_file is None:
+                data["status"] = "no_saved_reference"
+            elif self.remaining_bytes <= 0:
+                data["status"] = "too_large"
+            else:
+                reference = (
+                    source.source_id
+                    if isinstance(source, OriginalMessage)
+                    else message_source_id(
+                        f"telegram:{source.chat_id}", source.message_id
+                    )
+                )
+                data["source_id"] = reference
+                if reference in self.seen:
+                    data["status"] = "already_supplied"
+                else:
+                    loaded = await self.images.retry_image(
+                        source,
+                        timeout_seconds=timeout_seconds,
+                        max_bytes=self.remaining_bytes,
+                        request_message_id=self.request_message_id,
+                    )
+                    self.remaining_bytes -= sum(
+                        len(image.data)
+                        for image in loaded
+                        if isinstance(image, ImageAttachment)
+                    )
+                    for image in loaded:
+                        if isinstance(image, ImageOmission):
+                            data["status"] = image.reason
+                        else:
+                            data.update(
+                                status="loaded",
+                                untrusted=True,
+                                preview_kind=image.preview_kind,
+                                first_frame=image.first_frame,
+                            )
+                            self.seen.add(reference)
+            return ToolResult(
+                external_input(json.dumps(data, ensure_ascii=False), "memory"),
+                *(
+                    ImageInput(data=image.data, media_type=image.media_type)
+                    for image in loaded
+                    if isinstance(image, ImageAttachment)
+                ),
+            )
 
     async def load(
         self, source: OriginalMessage
@@ -41,6 +136,34 @@ class HistoryImageTurn:
             if any(isinstance(image, ImageAttachment) for image in loaded):
                 self.seen.add(source.source_id)
             return loaded
+
+
+@tool
+@inject
+async def retry_image(
+    message_id: Annotated[int, Field(gt=0, strict=True)],
+    timeout_seconds: Annotated[int, Field(ge=1, le=120, strict=True)] = 10,
+    *,
+    history: FromDishka[HistoryReader],
+    image_turn: Annotated[
+        HistoryImageTurn | None, Inject("history_image_turn", default=None)
+    ],
+) -> ToolResult:
+    """Retry an image or media preview by its Telegram message ID in this chat.
+
+    Choose timeout_seconds from 1 to 120 (default 10) for the whole attempt.
+    Failed-download cache entries are bypassed. At most three calls per message
+    are allowed within this agent session, including failed calls. "already_supplied" means the image is
+    already available from a tool result. Never guess contents when unavailable.
+    """
+    if image_turn is None:
+        return ToolResult(
+            external_input(
+                json.dumps({"message_id": message_id, "status": "loading_unavailable"}),
+                "memory",
+            )
+        )
+    return await image_turn.retry(message_id, timeout_seconds, history)
 
 
 def _table_result(result: dict[str, Any]) -> dict[str, Any]:

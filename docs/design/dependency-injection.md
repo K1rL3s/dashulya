@@ -283,6 +283,15 @@ sizes and the visual-input kind are persisted. Current and saved inputs share th
 same normalization and loading functions, including preview and first-frame
 fallbacks. Existing photo references need no schema or data migration.
 
+The reply agent also exposes `retry_image` for numeric message IDs in its current
+chat. `Dialogue` supplies its `HistoryImageTurn` through a hidden AG2 dependency,
+with the current source snapshot, shared remaining image bytes and a fresh retry
+counter map. State lives for one ask rather than on the shared agent or Telegram
+adapter. The same lock protects history-image loads and at most three retry calls
+per ID; changing the requested timeout cannot reset that counter. The loader
+receives the validated timeout per call and bypasses failure-cache reads for
+explicit retries. Ordinary automatic media loads retain their ten-second limit.
+
 ## Shared graph and scopes
 
 `main/container.py` builds one graph with `AG2Scope`. Application dependencies

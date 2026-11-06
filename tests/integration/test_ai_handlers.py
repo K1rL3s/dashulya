@@ -930,7 +930,7 @@ class TestAIHandler(_AIHandlerFixture):
         self.get_file.assert_not_awaited()
         self.get_file.reset_mock()
         await self.message(animation={**ANIMATION, "thumbnail": None})
-        self.get_file.assert_awaited_once_with("animation")
+        self.get_file.assert_awaited_once_with("animation", request_timeout=10)
         assert self.dialogue.reply.call_args.args[0].images == (
             ImageOmission(self.update_id, "decode_failed"),
         )

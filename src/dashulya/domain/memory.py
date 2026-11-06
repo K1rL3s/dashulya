@@ -236,3 +236,12 @@ class ContextImages(Protocol):
         request_message_id: int | None = None,
         max_bytes: int | None = None,
     ) -> tuple[ImageAttachment | ImageOmission, ...]: ...
+
+    async def retry_image(
+        self,
+        message: MemoryMessage | OriginalMessage,
+        *,
+        timeout_seconds: int,
+        max_bytes: int,
+        request_message_id: int | None = None,
+    ) -> tuple[ImageAttachment | ImageOmission, ...]: ...

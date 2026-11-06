@@ -203,8 +203,15 @@ the bot. Current and directly replied-to
 pictures can also be supplied as native image inputs. Missing parents and older
 media without saved file references remain unavailable. Media candidates load
 through `asyncio.gather` within a shared byte budget and 10-second deadline.
-Individual metadata/download operations have a 5-second deadline. Failed inputs
+Individual metadata/download operations also allow 10 seconds. Failed inputs
 become explicit omission notes, including failures on the current message.
+The reply agent can call `retry_image(message_id, timeout_seconds)` for a fresh
+attempt in the current chat, choosing 1–120 seconds (default 10). Each message ID
+allows at most three tool calls per agent session, including failed attempts;
+the next user request starts a new session. Retries bypass the short-lived
+failure cache and share the existing image budget with context and history-tool
+images. Successful calls supply native image inputs; other outcomes contain only
+an explicit status and the remaining attempt count.
 Normalized images and animation frames use a bounded 64 MiB RAM cache for five
 minutes; unavailable files are remembered for 30 seconds. Media logs retain
 stages, timings, cache outcomes and omissions without file IDs, URLs or bytes.
@@ -262,7 +269,7 @@ are skipped when metadata already shows the image will not fit; the agent instea
 receives a source-labelled note that the image is too large. If an unknown or
 understated size exceeds the limit during streaming, the stream stops and the
 same note is supplied while other available text and images remain usable. Downloads
-have a 30-second deadline. File signatures determine JPEG, PNG or WebP MIME types;
+share the 10-second media deadline. File signatures determine JPEG, PNG or WebP MIME types;
 Telegram animations can supply their first frame as described below; ordinary
 video/audio messages and document parsing are not supported by this image path.
 The reply model must support image input.

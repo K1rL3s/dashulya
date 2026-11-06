@@ -14,7 +14,7 @@ from dashulya.ai.agents.factory import create_decision_agent, create_reply_agent
 from dashulya.ai.agents.models import AgentModels, create_models
 from dashulya.ai.dialogue import Dialogue
 from dashulya.ai.message_format import MessageFormatter
-from dashulya.ai.tools.history import chat_history
+from dashulya.ai.tools.history import chat_history, retry_image
 from dashulya.ai.tools.memory import search_memory
 from dashulya.ai.tools.reactions import set_reaction
 from dashulya.ai.tools.web import create_web_tools
@@ -95,6 +95,7 @@ class AgentProvider(Provider):
             tools=[
                 search_memory,
                 chat_history,
+                retry_image,
                 set_reaction,
                 CodeExecutionTool(),
                 *create_web_tools(settings.keenable_api_key),

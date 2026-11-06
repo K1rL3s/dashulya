@@ -182,6 +182,17 @@ an image for the same source in that turn. Subsequent private turns can evict
 old tool-result images using the same budget as ordinary image inputs. Native
 images stay in bounded RAM; no new image bytes or descriptions are persisted.
 
+`retry_image(message_id, timeout_seconds=10)` retries visual media from the current
+chat with a whole-attempt timeout of 1–120 seconds. A request-bound snapshot can
+resolve the current message; other IDs go through the same scoped original reader
+and fixed cutoff. The tool cannot select another chat. Each `HistoryImageTurn`
+counts at most three calls for each numeric ID, including failures; a shared lock
+also enforces the limit for concurrent tool calls. A new ask resets the counters,
+including in a retained private stream. Retries bypass cached failures, preserve
+successful cached bytes and share the remaining image budget and deduplication
+with `chat_history`. Results contain a status, attempt count and remaining attempts;
+successful results also carry native image evidence and source metadata.
+
 History SQL is logged explicitly: tool-call events include the bounded `sql` list,
 query count and AG2 call ID; per-query events include SQL, one-based index, batch
 ID, trusted chat/request IDs, duration, outcome, returned row count and truncation.
@@ -271,7 +282,7 @@ usable. Only capacity held by unfinished downloads can require waiting. Unknown
 sizes reserve the currently available capacity and may grow by reclaiming lower
 priority completed inputs. All
 tasks share one 10-second batch deadline; metadata requests and streams each have
-a 5-second network deadline. Cancelling a batch cancels and joins all its tasks.
+a 10-second network deadline. Cancelling a batch cancels and joins all its tasks.
 JPEG, PNG and WebP signatures are checked, and combined retained/reserved bytes
 are capped at 20,000,000 during streaming. An image known to exceed the remaining budget is
 not downloaded and instead produces an explicit oversized-image note for the

@@ -416,7 +416,7 @@ class Dialogue:
                         "memory_access": access,
                         "reaction_turn": None if request.is_whisper else reactions,
                         "history_image_turn": await self._history_image_turn(
-                            stream, inputs, message_id
+                            stream, inputs, request, selected
                         ),
                     },
                 )
@@ -446,10 +446,29 @@ class Dialogue:
             )
 
     async def _history_image_turn(
-        self, stream: MemoryStream, inputs: list[Input], message_id: int | None
+        self,
+        stream: MemoryStream,
+        inputs: list[Input],
+        request: ReplyRequest,
+        selected: tuple[MemoryMessage, ...],
     ) -> HistoryImageTurn | None:
         if self._context_images is None:
             return None
+        if (
+            request.key[0] > 0
+            and self._history is not None
+            and request.message_id is not None
+            and request.images
+        ):
+            context = await self._history.context(
+                request.key, request.message_id, limit=1, parent_hops=1
+            )
+            selected = tuple(
+                source
+                for source in context.messages
+                if source.sent_at <= request.sent_at
+                and (source.edited_at is None or source.edited_at <= request.sent_at)
+            )
         retained = sum(
             len(part.data)
             for event in await stream.history.get_events()
@@ -460,7 +479,15 @@ class Dialogue:
             if isinstance(part, BinaryInput) and part.kind == BinaryType.IMAGE
         ) + sum(len(part.data) for part in inputs if isinstance(part, BinaryInput))
         return HistoryImageTurn(
-            max(0, self._max_image_bytes - retained), message_id, self._context_images
+            max(0, self._max_image_bytes - retained),
+            request.message_id,
+            self._context_images,
+            chat_id=request.key[0],
+            sources={
+                source.message_id: source
+                for source in selected
+                if source.message_id == request.message_id
+            },
         )
 
     async def clear(self, key: ConversationKey) -> None:

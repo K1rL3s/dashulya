@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 ImageMediaType = Literal["image/jpeg", "image/png", "image/webp"]
 MEDIA_TIMEOUT_SECONDS = 10
-NETWORK_TIMEOUT_SECONDS = 5
+NETWORK_TIMEOUT_SECONDS = 10
 CACHE_BYTES = 64 * 1024 * 1024
 CACHE_TTL_SECONDS = 300
 FAILURE_CACHE_SIZE = 256
@@ -147,11 +147,16 @@ class _BatchBudget:
 
 class _ImageBudget:
     def __init__(
-        self, batch: _BatchBudget, index: int, fields: dict[str, object]
+        self,
+        batch: _BatchBudget,
+        index: int,
+        fields: dict[str, object],
+        network_timeout: int,
     ) -> None:
         self.batch = batch
         self.index = index
         self.fields = fields
+        self.network_timeout = network_timeout
         self.capacity: int | None = None
         self.result: ImageAttachment | ImageOmission | None = None
         self.stage = "budget"
@@ -210,8 +215,10 @@ class TelegramImages:
         logger.info(
             "Media stage started", extra={**budget.fields, "media_stage": budget.stage}
         )
-        async with asyncio.timeout(NETWORK_TIMEOUT_SECONDS):
-            metadata = await self._bot.get_file(file.file_id)
+        async with asyncio.timeout(budget.network_timeout):
+            metadata = await self._bot.get_file(
+                file.file_id, request_timeout=budget.network_timeout
+            )
         logger.info(
             "Media stage completed",
             extra={
@@ -241,8 +248,12 @@ class TelegramImages:
         )
         data = bytearray()
         async with (
-            asyncio.timeout(NETWORK_TIMEOUT_SECONDS),
-            aclosing(self._bot.session.stream_content(url, chunk_size=65_536)) as stream,
+            asyncio.timeout(budget.network_timeout),
+            aclosing(
+                self._bot.session.stream_content(
+                    url, chunk_size=65_536, timeout=budget.network_timeout
+                )
+            ) as stream,
         ):
             async for chunk in stream:
                 await budget.check(len(data) + len(chunk))
@@ -314,7 +325,12 @@ class TelegramImages:
         )
 
     async def _resolve_image(
-        self, file: ImageFile | None, message_id: int, budget: _ImageBudget
+        self,
+        file: ImageFile | None,
+        message_id: int,
+        budget: _ImageBudget,
+        *,
+        bypass_failure_cache: bool,
     ) -> tuple[ImageAttachment | ImageOmission, str]:
         if file is None:
             return ImageOmission(message_id, "unsupported"), "miss"
@@ -323,7 +339,7 @@ class TelegramImages:
             await budget.reserve(len(cached.data))
             await budget.check(len(cached.data))
             return replace(cached, message_id=message_id), "hit"
-        failure = self._failures.get(file)
+        failure = None if bypass_failure_cache else self._failures.get(file)
         if failure is not None:
             return replace(failure, message_id=message_id), "negative_hit"
         return await self._load_image(file, message_id, budget=budget), "miss"
@@ -335,6 +351,7 @@ class TelegramImages:
         *,
         budget: _ImageBudget,
         deadline: float,
+        bypass_failure_cache: bool,
     ) -> _ImageBudget:
         started = perf_counter()
         cache_status = "miss"
@@ -342,7 +359,9 @@ class TelegramImages:
         logger.info("Media item started", extra=budget.fields)
         try:
             async with asyncio.timeout_at(deadline):
-                result, cache_status = await self._resolve_image(file, message_id, budget)
+                result, cache_status = await self._resolve_image(
+                    file, message_id, budget, bypass_failure_cache=bypass_failure_cache
+                )
         except ImageTooLargeError:
             result = ImageOmission(message_id)
         except ImageInputError as error:
@@ -402,6 +421,8 @@ class TelegramImages:
         phase: str,
         images: tuple[ImageAttachment | ImageOmission, ...] = (),
         max_bytes: int | None = None,
+        timeout_seconds: int | None = None,
+        bypass_failure_cache: bool = False,
     ) -> tuple[ImageAttachment | ImageOmission, ...]:
         started = perf_counter()
         used = sum(
@@ -417,7 +438,9 @@ class TelegramImages:
             "media_count": len(sources),
         }
         logger.info("Media batch started", extra=fields)
-        deadline = asyncio.get_running_loop().time() + MEDIA_TIMEOUT_SECONDS
+        deadline = asyncio.get_running_loop().time() + (
+            MEDIA_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+        )
         tasks = [
             asyncio.create_task(
                 self._load_one(
@@ -433,8 +456,12 @@ class TelegramImages:
                             if file is not None
                             else "unsupported",
                         },
+                        NETWORK_TIMEOUT_SECONDS
+                        if timeout_seconds is None
+                        else timeout_seconds,
                     ),
                     deadline=deadline,
+                    bypass_failure_cache=bypass_failure_cache,
                 )
             )
             for index, (message_id, file) in enumerate(sources)
@@ -473,6 +500,24 @@ class TelegramImages:
             },
         )
         return result
+
+    async def retry_image(
+        self,
+        message: MemoryMessage | OriginalMessage,
+        *,
+        timeout_seconds: int,
+        max_bytes: int,
+        request_message_id: int | None = None,
+    ) -> tuple[ImageAttachment | ImageOmission, ...]:
+        return await self._load_many(
+            [(message.message_id, message.image_file)],
+            chat_id=message.chat_id or 0,
+            request_message_id=request_message_id,
+            phase="retry",
+            max_bytes=max_bytes,
+            timeout_seconds=timeout_seconds,
+            bypass_failure_cache=True,
+        )
 
     async def load(self, message: Message) -> tuple[ImageAttachment | ImageOmission, ...]:
         sources = (

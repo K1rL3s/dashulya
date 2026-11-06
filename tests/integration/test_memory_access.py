@@ -5,17 +5,18 @@ from contextlib import AsyncExitStack
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 from ag2 import Agent, MemoryStream
-from ag2.events import ToolCallEvent, ToolResultEvent
+from ag2.events import BinaryInput, TextInput, ToolCallEvent, ToolResultEvent
 from ag2.testing import TestConfig, TrackingConfig
 from ag2.tools.final.function_tool import FunctionToolSchema
 from aiogram import Bot
 from aiogram.types import File
 from dishka import Provider, make_async_container, provide
 from dishka_ag2 import AG2Provider, AG2Scope
+from pydantic import ValidationError
 
 from dashulya.ai.agents.models import AgentModels
 from dashulya.ai.dialogue import Dialogue
@@ -32,12 +33,12 @@ from dashulya.domain.memory import (
     OriginalMessage,
     message_source_id,
 )
-from dashulya.domain.messages import ImageFile, ReplyBatch, ReplyRequest
+from dashulya.domain.messages import ImageAttachment, ImageFile, ReplyBatch, ReplyRequest
 from dashulya.main.config import IMAGE_MAX_BYTES, Settings
 from dashulya.main.providers.ai import AgentProvider
 from dashulya.memory.history import CanonicalHistory
 from dashulya.memory.store import MessageStore
-from tests.support import TEST_API_KEY, memory_tool_data, reply_json
+from tests.support import TEST_API_KEY, input_payload, memory_tool_data, reply_json
 
 NOW = datetime(2026, 10, 25, 12, tzinfo=UTC)
 GROUP = -100123
@@ -123,6 +124,406 @@ class _Dependencies(Provider):
 
 @pytest.mark.usefixtures("_setup")
 class TestMemoryAccessIntegration:
+    async def test_retry_image_timeout_bounds_the_whole_attempt(self) -> None:
+        await self.live.record(
+            MemoryMessage(
+                42,
+                2,
+                "Private photo",
+                NOW - timedelta(seconds=1),
+                42,
+                "Owner",
+                "Private",
+                media_type="photo",
+                image_file=ImageFile("private-photo"),
+            )
+        )
+        container, _ = self.container(
+            ToolCallEvent(
+                "retry_image", arguments='{"message_id":2,"timeout_seconds":1}'
+            ),
+            reply_json("Unavailable"),
+        )
+        bot = await container.get(Bot)
+        dialogue = await container.get(Dialogue)
+        agent = await container.get(Agent[ReplyBatch])
+
+        async def metadata(*args: Any, **kwargs: Any) -> File:
+            await asyncio.sleep(0.7)
+            return File(
+                file_id="private-photo", file_unique_id="unique", file_path="photo.png"
+            )
+
+        async def content(*args: Any, **kwargs: Any) -> AsyncIterator[bytes]:
+            await asyncio.sleep(0.7)
+            yield b"\x89PNG\r\n\x1a\nphoto"
+
+        with (
+            patch.object(bot, "get_file", metadata),
+            patch.object(bot.session, "stream_content", content),
+            patch.object(agent, "ask", wraps=agent.ask) as ask,
+        ):
+            await dialogue.reply(
+                ReplyRequest(
+                    (42, None),
+                    "Retry",
+                    user_id=42,
+                    user_name="Owner",
+                    sent_at=NOW,
+                    message_id=99,
+                )
+            )
+        (result,) = await self.results(ask.call_args.kwargs["stream"])
+        assert self.retry_data(result)["status"] == "unavailable"
+        assert len(result.result.parts) == 1
+
+    @pytest.mark.parametrize("timeout", [0, -1, 121, 1.5, True, "30"])
+    async def test_retry_image_rejects_invalid_timeout_without_downloading(
+        self,
+        timeout: Any,
+    ) -> None:
+        container, _ = self.container(
+            ToolCallEvent(
+                "retry_image",
+                arguments=json.dumps({
+                    "message_id": 2,
+                    "timeout_seconds": timeout,
+                }),
+            ),
+            reply_json("Done"),
+        )
+        bot = await container.get(Bot)
+        dialogue = await container.get(Dialogue)
+        metadata = AsyncMock()
+        with patch.object(bot, "get_file", metadata), pytest.raises(ValidationError):
+            await dialogue.reply(
+                ReplyRequest(
+                    (GROUP, None),
+                    "Retry",
+                    user_id=42,
+                    user_name="Owner",
+                    sent_at=NOW,
+                    message_id=99,
+                )
+            )
+        metadata.assert_not_awaited()
+
+    async def test_retry_image_shares_budget_with_incoming_and_history_images(
+        self,
+    ) -> None:
+        for message_id in (2, 3):
+            await self.live.record(
+                MemoryMessage(
+                    42,
+                    message_id,
+                    "Photo",
+                    NOW - timedelta(seconds=1),
+                    42,
+                    "Owner",
+                    "Private",
+                    media_type="photo",
+                    image_file=ImageFile(f"photo-{message_id}"),
+                )
+            )
+        container, _ = self.container(
+            ToolCallEvent(
+                "chat_history",
+                arguments=json.dumps({
+                    "sql": ["SELECT source_id FROM messages WHERE message_id=2 LIMIT 1"],
+                }),
+            ),
+            ToolCallEvent("retry_image", arguments='{"message_id":3}'),
+            reply_json("Done"),
+        )
+        image = b"\x89PNG\r\n\x1a\nphoto"
+        bot = await container.get(Bot)
+        agent = await container.get(Agent[ReplyBatch])
+        dialogue = Dialogue(
+            agent,
+            history=self.live,
+            context_images=await container.get(ContextImages),
+            max_image_bytes=2 * len(image),
+        )
+        metadata = AsyncMock(
+            return_value=File(
+                file_id="photo-2",
+                file_unique_id="unique",
+                file_path="photo.png",
+            )
+        )
+
+        async def content(*args: Any, **kwargs: Any) -> AsyncIterator[bytes]:
+            yield image
+
+        with (
+            patch.object(bot, "get_file", metadata),
+            patch.object(bot.session, "stream_content", content),
+            patch.object(agent, "ask", wraps=agent.ask) as ask,
+        ):
+            await dialogue.reply(
+                ReplyRequest(
+                    (42, None),
+                    "Retry",
+                    user_id=42,
+                    user_name="Owner",
+                    sent_at=NOW,
+                    message_id=99,
+                    images=(ImageAttachment(image, "image/png", 99),),
+                )
+            )
+        first, retry = await self.results(ask.call_args.kwargs["stream"])
+        assert [
+            part.data for part in first.result.parts if isinstance(part, BinaryInput)
+        ] == [image]
+        assert self.retry_data(retry)["status"] == "too_large"
+        assert len(retry.result.parts) == 1
+        metadata.assert_awaited_once_with("photo-2", request_timeout=10)
+
+    async def test_retry_image_resolves_old_ids_within_the_trusted_chat_and_cutoff(
+        self,
+    ) -> None:
+        for message_id in range(10, 31):
+            await self.live.record(
+                MemoryMessage(
+                    GROUP,
+                    message_id,
+                    "Recent",
+                    NOW - timedelta(seconds=1),
+                    42,
+                    "Owner",
+                    "Group",
+                )
+            )
+        for chat_id, message_id, sent_at, edited_at in (
+            (GROUP, 2, NOW - timedelta(seconds=1), None),
+            (OTHER, 3, NOW - timedelta(seconds=1), None),
+            (GROUP, 4, NOW + timedelta(seconds=1), None),
+            (GROUP, 5, NOW - timedelta(seconds=1), NOW + timedelta(seconds=1)),
+        ):
+            await self.live.record(
+                MemoryMessage(
+                    chat_id,
+                    message_id,
+                    "Photo",
+                    sent_at,
+                    42,
+                    "Owner",
+                    "Group",
+                    edited_at=edited_at,
+                    media_type="photo",
+                    image_file=ImageFile(f"photo-{message_id}"),
+                )
+            )
+        container, _ = self.container(
+            *(
+                ToolCallEvent("retry_image", arguments=json.dumps({"message_id": mid}))
+                for mid in (3, 4, 5, 2)
+            ),
+            reply_json("Done"),
+        )
+        bot = await container.get(Bot)
+        dialogue = await container.get(Dialogue)
+        agent = await container.get(Agent[ReplyBatch])
+        image = b"\x89PNG\r\n\x1a\nold-image"
+        metadata = AsyncMock(
+            return_value=File(
+                file_id="photo-2",
+                file_unique_id="unique",
+                file_path="photo.png",
+            )
+        )
+
+        async def content(*args: Any, **kwargs: Any) -> AsyncIterator[bytes]:
+            yield image
+
+        with (
+            patch.object(bot, "get_file", metadata),
+            patch.object(bot.session, "stream_content", content),
+            patch.object(agent, "ask", wraps=agent.ask) as ask,
+        ):
+            await dialogue.reply(
+                ReplyRequest(
+                    (GROUP, None),
+                    "Look again",
+                    user_id=42,
+                    user_name="Owner",
+                    sent_at=NOW,
+                    message_id=99,
+                )
+            )
+        results = await self.results(ask.call_args.kwargs["stream"])
+        assert [self.retry_data(result)["status"] for result in results] == [
+            "not_found",
+            "not_found",
+            "not_found",
+            "loaded",
+        ]
+        assert [
+            part.data
+            for part in results[-1].result.parts
+            if isinstance(part, BinaryInput)
+        ] == [image]
+        metadata.assert_awaited_once_with("photo-2", request_timeout=10)
+
+    @staticmethod
+    def retry_data(result: ToolResultEvent) -> dict[str, Any]:
+        part = result.result.parts[0]
+        assert isinstance(part, TextInput)
+        data = json.loads(input_payload(part.content))
+        assert isinstance(data, dict)
+        return data
+
+    @pytest.mark.parametrize("chat_id", [GROUP, 42])
+    async def test_retry_image_limit_is_per_id_and_resets_in_the_next_session(
+        self,
+        chat_id: int,
+    ) -> None:
+        for message_id in (7, 8):
+            await self.live.record(
+                MemoryMessage(
+                    chat_id,
+                    message_id,
+                    "Photo",
+                    NOW - timedelta(seconds=1),
+                    42,
+                    "Owner",
+                    "Group",
+                    media_type="photo",
+                    image_file=ImageFile(f"photo-{message_id}"),
+                )
+            )
+        calls = [
+            ToolCallEvent(
+                "retry_image",
+                arguments=json.dumps({
+                    "message_id": message_id,
+                    "timeout_seconds": timeout,
+                }),
+            )
+            for message_id, timeout in ((7, 10), (8, 10), (7, 20), (7, 30), (7, 120))
+        ]
+        container, _ = self.container(
+            calls,
+            reply_json("Unavailable"),
+        )
+        bot = await container.get(Bot)
+        dialogue = await container.get(Dialogue)
+        agent = await container.get(Agent[ReplyBatch])
+        metadata = AsyncMock(side_effect=TimeoutError)
+        with (
+            patch.object(bot, "get_file", metadata),
+            patch.object(agent, "ask", wraps=agent.ask) as ask,
+        ):
+            outcomes = []
+            for _ in range(2):
+                await dialogue.reply(
+                    ReplyRequest(
+                        (chat_id, None),
+                        "Try these photos",
+                        user_id=42,
+                        user_name="Owner",
+                        sent_at=NOW,
+                        message_id=99,
+                    )
+                )
+                outcomes.append([
+                    self.retry_data(event)
+                    for event in (await self.results(ask.call_args.kwargs["stream"]))[-5:]
+                ])
+        assert sorted(
+            (item["message_id"], item["attempts"], item["status"]) for item in outcomes[0]
+        ) == sorted([
+            (7, 1, "unavailable"),
+            (8, 1, "unavailable"),
+            (7, 2, "unavailable"),
+            (7, 3, "unavailable"),
+            (7, 3, "retry_limit_reached"),
+        ])
+        assert outcomes[1][0]["attempts"] == 1
+        assert outcomes[1][0]["status"] == "unavailable"
+        assert metadata.await_count == (10 if chat_id < 0 else 8)
+
+    @pytest.mark.parametrize("chat_id", [GROUP, 42])
+    async def test_retry_image_supplies_current_photo_after_failed_automatic_load(
+        self,
+        chat_id: int,
+    ) -> None:
+        current = MemoryMessage(
+            chat_id,
+            99,
+            "Current photo",
+            NOW,
+            42,
+            "Owner",
+            "Group",
+            media_type="photo",
+            image_file=ImageFile("current-photo"),
+        )
+        await self.live.record(current)
+        container, _ = self.container(
+            ToolCallEvent(
+                "retry_image", arguments='{"message_id":99,"timeout_seconds":30}'
+            ),
+            reply_json("Seen"),
+        )
+        bot = await container.get(Bot)
+        dialogue = await container.get(Dialogue)
+        agent = await container.get(Agent[ReplyBatch])
+        image = b"\x89PNG\r\n\x1a\nretried-image"
+        metadata = AsyncMock(
+            side_effect=[
+                TimeoutError(),
+                File(
+                    file_id="current-photo",
+                    file_unique_id="unique",
+                    file_path="photo.png",
+                ),
+            ]
+        )
+        downloads: list[int] = []
+
+        async def content(
+            *args: Any, timeout: int, **kwargs: Any
+        ) -> AsyncIterator[bytes]:
+            downloads.append(timeout)
+            yield image
+
+        with (
+            patch.object(bot, "get_file", metadata),
+            patch.object(bot.session, "stream_content", content),
+            patch.object(agent, "ask", wraps=agent.ask) as ask,
+        ):
+            images = ()
+            if chat_id > 0:
+                loader = await container.get(ContextImages)
+                images = await loader.load_context((current,), request_message_id=99)
+            await dialogue.reply(
+                ReplyRequest(
+                    (chat_id, None),
+                    "Look again",
+                    user_id=42,
+                    user_name="Owner",
+                    sent_at=NOW,
+                    message_id=99,
+                    images=images,
+                )
+            )
+        (result,) = await self.results(ask.call_args.kwargs["stream"])
+        text = result.result.parts[0]
+        assert isinstance(text, TextInput)
+        data = json.loads(input_payload(text.content))
+        assert data["status"] == "loaded"
+        assert data["attempts"] == 1
+        assert [
+            part.data for part in result.result.parts if isinstance(part, BinaryInput)
+        ] == [image]
+        assert metadata.await_args_list == [
+            call("current-photo", request_timeout=10),
+            call("current-photo", request_timeout=30),
+        ]
+        assert downloads == [30]
+        assert "current-photo" not in text.content
+
     async def test_group_tool_lists_id_ranges_threads_and_author_date_filters(
         self,
     ) -> None:
@@ -287,7 +688,7 @@ class TestMemoryAccessIntegration:
         assert memory_tool_data(results[0])["rows"] == []
         assert memory_tool_data(results[1])["rows"] == []
         assert len(results[2].result.parts) == 2
-        metadata.assert_awaited_once_with(f"photo:{GROUP}")
+        metadata.assert_awaited_once_with(f"photo:{GROUP}", request_timeout=10)
         assert result.messages[0].reply_to_message_id is None
         reader = self.service.history(
             MemoryAccess(GROUP, False, before=NOW, before_id=99)
@@ -363,7 +764,7 @@ class TestMemoryAccessIntegration:
             for schema in config.calls[0].tools
             if isinstance(schema, FunctionToolSchema)
         ]
-        assert len(schemas) == 3
+        assert len(schemas) == 4
         for name in (
             "is_private",
             "user_id",

@@ -71,6 +71,7 @@ class TestDependency:
         assert [tool.name for tool in reply.tools] == [
             "search_memory",
             "chat_history",
+            "retry_image",
             "set_reaction",
             "code_execution",
         ]

@@ -194,7 +194,7 @@ class TestHistoryImages:
             assert data["image"]["status"] == "loaded"
             assert data["image"]["untrusted"] is True
             assert "saved-photo" not in json.dumps(data)
-        self.metadata.assert_awaited_once_with("saved-photo")
+        self.metadata.assert_awaited_once_with("saved-photo", request_timeout=10)
 
     async def test_repeated_read_in_one_turn_does_not_duplicate_image(self) -> None:
         dialogue = await self.create(self.read(), self.read(), reply_json("Seen"))
@@ -323,7 +323,7 @@ class TestHistoryImages:
         assert self.data(result)["image"]["status"] == "loaded"
         assert self.data(result)["image"]["preview_kind"] == "sticker"
         assert self.data(result)["image"]["first_frame"] is False
-        self.metadata.assert_awaited_once_with("thumbnail")
+        self.metadata.assert_awaited_once_with("thumbnail", request_timeout=10)
 
     async def test_private_next_turn_evicts_old_tool_images_within_shared_budget(
         self,

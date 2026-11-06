@@ -244,7 +244,7 @@ class ReplyTrace(BaseMiddleware):
                 logger.warning("AI tool call completed", extra=extra)
             else:
                 logger.error("AI tool call completed", extra=extra)
-            if event.name in {"search_memory", "chat_history"}:
+            if event.name in {"search_memory", "chat_history", "retry_image"}:
                 return _memory_failure(event, result.error)
         else:
             logger.info(
