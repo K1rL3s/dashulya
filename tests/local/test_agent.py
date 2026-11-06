@@ -204,7 +204,7 @@ class TestAgentAPI:
             assert not output_format["schema"]["additionalProperties"]
             instructions = request["instructions"]
             assert json.dumps(instructions).count("Message timezone: Asia/Tokyo.") == 1
-            columns = "The metadata keys are id, user_id"
+            columns = "Every record includes message_id, user_id and user"
             assert json.dumps(instructions).count(columns) == 1
             messages = [entry for entry in request["input"] if entry["role"] != "system"]
             assert "Asia/Tokyo" not in json.dumps(messages)
@@ -303,7 +303,7 @@ class TestAgentAPI:
             assert "tools" not in request
             assert "reasoning" not in request
             assert len(request["input"]) == 1
-            columns = "The metadata keys are id, user_id"
+            columns = "Every record includes message_id, user_id and user"
             assert json.dumps(request["questions"]).count(columns) == 1
             assert columns not in json.dumps(request["input"])
             assert (

@@ -197,7 +197,7 @@ class TestContextTruncation:
             record["truncated_thread"]
             for item in recent
             for record in group_records(item["text"])
-            if record["id"] == 6
+            if record["message_id"] == 6
         )
         assert cut["root_id"] == 1
         assert cut["remaining_hops"] == 5

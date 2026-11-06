@@ -127,9 +127,9 @@ class TestToolMessageFormat:
         raw = {"messages": [original().render(), foreign.render(), namesake.render()]}
         result = self.formatter.result(raw, interlocutor_id=42)
         first, second = result["message_blocks"]
-        assert "User 42: Alice (@alice)" in first["text"]
-        assert "99: Alice (@alice)" in first["text"]
-        assert "42: Alicia (@new_alice)" in second["text"]
+        assert '"user_id":42,"user":"Alice","username":"alice"' in first["text"]
+        assert '"user_id":99,"user":"Alice","username":"alice"' in first["text"]
+        assert '"user_id":42,"user":"Alicia","username":"new_alice"' in second["text"]
         assert "Interlocutor user id: 42" in first["text"]
         assert "Interlocutor user id: 42" in second["text"]
         assert "Interlocutor" not in str(self.formatter.result(raw))
@@ -153,14 +153,17 @@ class TestToolMessageFormat:
             [1, 42, "00:01:00", "Original 1"],
             [2, 123, "00:02:00", "Original 2", 1],
         ]
-        assert "42: Alice (@alice)" in block["text"]
+        assert '"user_id":42,"user":"Alice","username":"alice"' in block["text"]
         assert "User 123:" not in block["text"]
         assert group_records(block["text"])[1]["role"] == "assistant"
         first_record = block["text"].split("\n===\n")[1]
         header = first_record.split("\n<external_input", 1)[0]
         assert "26 October 2026 (Monday)" in header
-        assert "User 42: Alice (@alice)" in header
-        assert '00:01:00 {"id":1,"user_id":42}' in header
+        assert '00:01:00 {"message_id":1,"user_id":42,"user":"Alice"' in header
+        assert [record.get("reply_to") for record in group_records(block["text"])] == [
+            None,
+            1,
+        ]
         assert input_payload(first_record) == "Original 1"
         assert "Europe/Moscow" not in block["text"]
         assert "26 October 2026 (Monday)" in block["text"]
@@ -547,9 +550,9 @@ class TestToolMessageRoundtrip:
             for part in event.parts
             if isinstance(part, TextInput)
         )
-        assert "User 99: Alice" in rendered
+        assert '"user_id":99,"user":"Alice"' in rendered
         assert "Interlocutor user id: 99" in rendered
-        assert "42: Alice" in rendered
+        assert '"user_id":42,"user":"Alice"' in rendered
         assert "Interlocutor user id: 42" not in rendered
         recent = await dialogue.recent_context((-100123, None), through_message_id=3)
         assert "Interlocutor user id: 99" in str(recent)
@@ -617,9 +620,9 @@ class TestToolMessageRoundtrip:
                 header = block["text"]
                 assert isinstance(header, str)
                 assert f"Interlocutor user id: {user_id}" in header
-                assert f"User {user_id}: Alice (@alice)" in header
+                assert f'"user_id":{user_id},"user":"Alice","username":"alice"' in header
                 other = 99 if user_id == 42 else 42
-                assert f"{other}: Alice (@alice)" in header
+                assert f'"user_id":{other},"user":"Alice","username":"alice"' in header
 
     async def test_injected_tools_share_formatter_and_forward_arguments(self) -> None:
         backend = AsyncMock(spec=MemoryBackend)
@@ -679,7 +682,7 @@ class TestToolMessageRoundtrip:
                 if isinstance(part, TextInput)
             )
             assert data == formatter.result(raw, interlocutor_id=42)
-            assert "author_user=42" in str(data)
+            assert '"author_user":42' in str(data)
             assert "Interlocutor user id: 42" in str(data)
         backend.search.assert_awaited_once_with(
             "original",

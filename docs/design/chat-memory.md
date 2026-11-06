@@ -222,8 +222,9 @@ operate over the authorized originals.
 
 `search_memory` uses the same compact message format as group reply
 context. The AI boundary collects unique originals into `message_blocks`, grouped
-by source chat. Each block shares chat metadata and uses incremental author/date
-declarations followed by time/JSON metadata outside the sender's `external_input`
+by source chat. Each block shares chat metadata and uses calendar headings
+followed by time/JSON metadata with the author on every message, outside the
+sender's `external_input`
 envelope; only the source body and attached-media notes are inside. The system prompt
 defines this record format. Result
 `messages`, `sources`, `context` and nested `examples` refer to those originals by canonical source ID, preserving primary/context distinctions
@@ -387,15 +388,18 @@ the public username URL when available, otherwise a numeric supergroup URL.
 Private chats and unknown identities have a null template. Explicit source URLs
 in tool results take precedence; templates apply only to their own block's IDs.
 The header is untrusted navigation metadata, not authority or a reply target.
-The first message from each sender declares `User <id>: name (@username, bot)`.
-Later aliases or flag changes produce an updated declaration at that message,
-without rewriting the earlier prefix. This bot has no author declaration;
-its native assistant role identifies it. Only the final rendered message carries
+Every message includes `message_id`, `user_id` and `user` (its observed display
+name), including this bot's messages. Optional `username` and `bot` retain the
+handle and confirmed bot status from that message: only `bot:true` is emitted;
+false and unknown flags are omitted. No separate author declaration or
+accumulated aliases are emitted; later observations do not rewrite earlier
+messages. This bot's native assistant role also identifies it. Only the final
+rendered message carries
 `Interlocutor user id: <id>` for the current request's sender; in tool evidence,
 that ID is independent of the retrieved record's author. Explicit
 `OWNER_AUTHOR_IDS` bindings associate channel or legacy sender IDs with
-`OWNER_USER_ID` for narration. Declarations retain the source sender IDs and
-add `author_user=<user ID>`.
+`OWNER_USER_ID` for narration. Metadata retains the source sender IDs and adds
+numeric `author_user`.
 Names, matching usernames and channel ownership alone cannot assign this link.
 The setting asserts authorship explicitly, grants no access, and changes neither
 stored originals nor author filters. It is empty by default.
@@ -408,8 +412,9 @@ Local day headings occur in the first message of each day. The configured IANA t
 belongs to both agents' system prompts; user context and tool evidence omit its
 declaration. A repeated local hour carries its numeric UTC offset in the time
 field, including when only one occurrence is selected. A shared
-system-prompt fragment defines the time/JSON header keys `id`, `user_id`,
-optional `reply_to` and `attachment`. These headers precede the sender's
+system-prompt fragment defines the per-message author fields and optional
+`attachment` and `reply_to` (the original parent message ID when present).
+These headers precede the sender's
 `external_input` envelope around the exact original text. The shared chat header
 also has no envelope; observed names, handles and titles remain untrusted evidence.
 Text retains its original newlines and quotes. Tool blocks use

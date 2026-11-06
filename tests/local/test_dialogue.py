@@ -36,6 +36,7 @@ from tests.support import (
     TEST_API_KEY,
     MemoryOverride,
     ModelOverrides,
+    group_records,
     group_rows,
     input_payload,
     reply_json,
@@ -292,7 +293,7 @@ class TestDialogue:
             )
         )
         assert (
-            "couldn't generate"
+            "Сейчас не удалось подготовить ответ"
             in (
                 await empty.reply(
                     ReplyRequest(
@@ -377,7 +378,7 @@ class TestDialogue:
             event.content or "" for event in events if isinstance(event, ModelResponse)
         )
         assert group_rows(request)[-1][2] == "15:00:00"
-        assert group_rows(request)[-1][4] == 1
+        assert group_records(request)[-1]["reply_to"] == 1
         events = list(await stream.history.get_events())
         assert isinstance(events[1], ModelResponse)
         assert events[1].to_api()["role"] == "assistant"
@@ -448,7 +449,7 @@ class TestDialogue:
             assert isinstance(events[3], ModelRequest)
             requests = await self.requests(stream)
             assert "Passive participant" in requests[1]
-            assert group_rows(requests[1])[0][4] == 1
+            assert group_records(requests[1])[0]["reply_to"] == 1
             assert group_rows(requests[2])[0][5] == "animation"
             assert len(requests) == 4
             assert requests[-1].count(f"Request {number}") == 1

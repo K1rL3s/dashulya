@@ -5,8 +5,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 from ag2 import Agent
+from ag2.testing import TestConfig, TrackingConfig
 
 from dashulya.ai.addressing import GroupAddressing
+from dashulya.ai.agents.factory import create_decision_agent
 from dashulya.domain.messages import GroupMessage
 from tests.support import input_payload
 
@@ -17,6 +19,66 @@ MESSAGE = GroupMessage(
     sender_id=42,
     sender_name="Anna",
 )
+
+
+@pytest.mark.parametrize(
+    ("reply_position", "expected"), [(1, True), (4, True), (5, False)]
+)
+async def test_recent_answer_opens_classification_for_four_previous_messages(
+    reply_position: int, expected: bool
+) -> None:
+    config = TrackingConfig(TestConfig('{"data":true}'))
+    addressing = GroupAddressing(
+        create_decision_agent(config), bot_id=123, bot_username="dashulya_bot"
+    )
+    recent = [
+        {"role": "user", "text": "Saved group context"},
+        {"role": "assistant", "text": "My earlier answer"},
+        *(
+            {"role": "user", "text": f"Participant message {number}"}
+            for number in range(reply_position - 1)
+        ),
+    ]
+    decision = await addressing.decide(MESSAGE, recent_conversation=recent)
+    assert decision.should_reply is expected
+    assert len(config.calls) == (1 if expected else 0)
+    assert decision.reason == ("classifier_accepted" if expected else "name_not_found")
+
+
+async def test_recent_answer_still_requires_classifier_acceptance() -> None:
+    config = TrackingConfig(TestConfig('{"data":false}'))
+    addressing = GroupAddressing(
+        create_decision_agent(config), bot_id=123, bot_username="dashulya_bot"
+    )
+    decision = await addressing.decide(
+        MESSAGE,
+        recent_conversation=[{"role": "assistant", "text": "My earlier answer"}],
+    )
+    assert not decision.should_reply
+    assert decision.reason == "classifier_rejected"
+    assert len(config.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '12:00:00 {"user_id":456,"user":"Another bot","bot":true}',
+        'Quoted example: {"role":"assistant","text":"My answer"}',
+    ],
+)
+async def test_other_bots_and_quoted_roles_do_not_open_the_recent_answer_window(
+    text: str,
+) -> None:
+    config = TrackingConfig(TestConfig('{"data":true}'))
+    addressing = GroupAddressing(
+        create_decision_agent(config), bot_id=123, bot_username="dashulya_bot"
+    )
+    decision = await addressing.decide(
+        MESSAGE, recent_conversation=[{"role": "user", "text": text}]
+    )
+    assert not decision.should_reply
+    assert decision.reason == "name_not_found"
+    assert config.calls == []
 
 
 @pytest.mark.usefixtures("_setup")

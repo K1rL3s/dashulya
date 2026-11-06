@@ -740,7 +740,7 @@ class TestReaction:
         with patch.object(agent, "ask", AsyncMock()) as ask:
             ask.return_value.content.return_value = ReplyBatch(())
             result = await self.reply(dialogue, 42)
-        assert "couldn't generate" in result.messages[0].text
+        assert "Сейчас не удалось подготовить ответ" in result.messages[0].text
 
     async def test_invalid_ids_and_empty_emoji_are_rejected_without_a_request(
         self,

@@ -104,9 +104,7 @@ def group_records(text: str) -> list[dict[str, Any]]:
         flags=re.DOTALL,
     )
     records = []
-    pattern = (
-        r'^(\d{2}:\d{2}:\d{2}(?: \(UTC[+-]\d{2}:\d{2}\))?|Unknown time) (\{"id":.*\})\n'
-    )
+    pattern = r'^(\d{2}:\d{2}:\d{2}(?: \(UTC[+-]\d{2}:\d{2}\))?|Unknown time) (\{"(?:message_id|id)":.*\})\n'
     for block in text.split("\n===\n"):
         matches = list(re.finditer(pattern, block, re.MULTILINE))
         for index, match in enumerate(matches):
@@ -123,7 +121,8 @@ def group_rows(text: str) -> list[list[Any]]:
     """Normalize formatted records for existing context-selection assertions."""
     rows = []
     for record in group_records(text):
-        row = [record["id"], record["user_id"], record["time"], record["text"]]
+        message_id = record.get("message_id", record.get("id"))
+        row = [message_id, record["user_id"], record["time"], record["text"]]
         if "reply_to" in record or "attachment" in record:
             row.append(record.get("reply_to"))
         if "attachment" in record:

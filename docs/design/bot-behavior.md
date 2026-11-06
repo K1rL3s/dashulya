@@ -91,7 +91,12 @@ who cannot invoke replies; hidden questions remain excluded from shared history.
 Authorized private messages and explicit group mentions/replies to this bot
 invoke the reply agent directly. Group messages naming Dashulya, including
 “Дашуль” in any letter case, first pass an AG2 OpenAI Decisions classifier with
-bounded chat/topic context. A negative decision or classifier failure stays silent.
+bounded chat/topic context. Messages without her name also reach the classifier
+when one of the four preceding observed messages in that group/topic was from
+Dashulya. Exclude the current message from this window. A qualifying reply must
+be a native assistant record, not another bot or role claims inside text.
+Proximity admits classification, not an automatic reply. A negative decision or
+classifier failure stays silent.
 The classifier favors replying when intent is uncertain. A direct call by name,
 question, request or social remark counts even when the request is infeasible or
 inappropriate; the reply agent handles those limitations. Clearly third-person
@@ -118,8 +123,12 @@ Whispers use the ordinary `AI request started`, `AI reply generated`,
 `AI reply delivered` and failure events, with confirmed chunk counts and timings.
 Their lifecycle and model/tool traces share the Telegram update ID, sender,
 chat/topic, ephemeral message ID and `is_whisper=True`. Ephemeral IDs remain
-separate from canonical original-message IDs and memory cutoffs. Raw model
-outputs and history SQL follow the ordinary operational logging policy;
+separate from canonical original-message IDs and memory cutoffs. The initial
+`AI request started` event also records the question as `input_text` and the
+sender's display name as `user_name`, with the ordinary credential redaction.
+Record these before generation or delivery checks so skipped and failed requests
+remain inspectable. Raw model outputs and history SQL follow the ordinary
+operational logging policy;
 exclusion from shared memory does not suppress those logs. Skipped requests
 record their reason, including expired reply windows and missing permissions.
 
@@ -163,7 +172,7 @@ command in a supporting Telegram client for an initially private question.
 
 Reuse one AG2 `Agent`. Follow
 [ADR 0002](../adr/0002-rebuild-group-reply-context.md) for group context selection,
-roles, incremental author/date declarations, media and ordered reply targets.
+roles, per-message author metadata, calendar headings, media and ordered reply targets.
 Private histories remain in memory until restart or `/clear`. Serialize private
 generation, delivery and recording within a conversation. Group requests generate
 concurrently in separate streams; serialize only sending and recording of each
@@ -195,7 +204,7 @@ rendered text in recorded history. Use the ordinary message renderer to avoid
 the heavier default font observed for Rich Messages in the user's client.
 Keep the typing indicator and Telegram-length limits. Attempt each chunk once, including
 after ambiguous network errors. Keep provider errors and credentials out of
-logs and replies. The Jester persona and response instructions live in
+logs and replies. The Rebel persona and response instructions live in
 [`ai/prompts.py`](../../src/dashulya/ai/prompts.py).
 
 ## Group registry

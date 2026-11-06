@@ -40,7 +40,7 @@ def original(number: int, **changes: Any) -> OriginalMessage:
 
 def cut_header(text: str) -> dict[str, Any]:
     return {
-        str(record["id"]): record["truncated_thread"]
+        str(record["message_id"]): record["truncated_thread"]
         for record in group_records(text)
         if "truncated_thread" in record
     }

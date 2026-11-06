@@ -40,20 +40,21 @@ exactly at the limit or another seed already supplies the missing parent.
 Root references add neither message text nor permitted Telegram reply targets.
 
 Keep one stable user-role chat metadata event, then one event per original.
-Declare each sender as `User <id>: name (@username, bot, author_user=<id>)` in
-their first selected message, omitting unavailable handles and flags. Additional
-aliases or flag changes are declared where first observed, using only observations
-up to that message; later observations never rewrite an earlier declaration.
-A bot marker requires an unambiguous known flag; unmarked senders make no
-human/bot claim. Omit this assistant's declaration; its native assistant role
-already identifies it. Put `Interlocutor user id: <id>` in the metadata of
+Each message carries its own author in the time/JSON header: `message_id`,
+`user_id` and `user` (the observed display name), including assistant messages.
+Optional `username` and `bot` carry only that message's observed handle and
+confirmed bot status. Emit only `bot:true`; false and unknown flags are omitted.
+Do not accumulate aliases or emit
+separate author declarations. This layout replaces the earlier incremental
+declarations so each message identifies its author without consulting earlier
+records. Put `Interlocutor user id: <id>` in the metadata of
 only the last rendered message. It identifies the current request's author,
 independently of that record's sender, including in retrieved evidence.
 Address that person in the second person unless quoting or explicitly asked to
 reply to another participant. The ID is passed per rendering call and never
 stored on the shared formatter.
 Explicit author bindings may connect a channel or legacy sender ID to that
-person: show `author_user=<user ID>` and preserve the original sender identity.
+person: add numeric `author_user` metadata and preserve the original sender identity.
 Such a binding affects narration only; it does not authorize that sender, merge
 stored sources or imply authorship merely from owning a channel.
 Group entries under local day headings; emit another heading when the day changes.
@@ -62,19 +63,21 @@ zone out of user context and tool evidence. Timestamp conversion still uses that
 zone. Add a numeric UTC offset to a repeated local hour's time field, even when
 only one occurrence is selected, so daylight-saving folds remain unambiguous.
 This keeps shared configuration in the system prompt without repeating it in
-each context block. Put each day heading in its first message, followed by any
-author declaration, the optional final interlocutor marker, and a line with local
-time and JSON metadata: `id`, `user_id`, optional `reply_to` and `attachment`.
+each context block. Put each day heading in its first message, followed by the
+optional final interlocutor marker and the time/JSON line. Besides the author
+fields above, optional `attachment` identifies media, and `reply_to` carries the
+original parent message ID when known. Omit `reply_to` for messages without a
+parent. Stored reply relationships also drive context selection and Telegram delivery.
 Follow that line with the original text in its sender envelope, preserving
 newlines and quotes without JSON escaping. Sender remains the actual numeric ID,
 or a distinct local unknown reference. The shared system prompt defines this
 record contract for reply and addressing agents. Native event boundaries preserve original roles.
 Attach `truncated_thread` navigation to its boundary message's JSON, rather than
-aggregating it in the shared prefix. These incremental declarations keep
+aggregating it in the shared prefix. Per-message author metadata keeps
 unchanged leading messages stable when later participants, dates or interlocutors
 change; sliding selection and edited originals can still change the prefix.
 Unknown handles are omitted, unknown numeric identities remain distinct, and
-observed aliases remain visible. Uncertain bot flags are not classified. Memory
+observed aliases remain visible on their own messages. Memory
 tool results use this same rendering, grouped by source chat, with `===` between
 records and `role: assistant` in this bot's message metadata because tool text
 has no native assistant event. Source references preserve citations and excerpt
@@ -83,8 +86,8 @@ Tool rows remain evidence rather than permitted Telegram reply targets. Private
 user input retains its independent formatting.
 
 Wrap only the source body of user-role group records in
-`<external_input source="...">` envelopes. Keep calendar, author, interlocutor and
-time/JSON metadata before the envelope so the application's record headers remain
+`<external_input source="...">` envelopes. Keep calendar, interlocutor and time/JSON
+metadata before the envelope so the application's record headers remain
 visually distinct from source content. The shared chat metadata event also has
 no envelope. Observed names, handles and titles remain untrusted evidence.
 Private inputs retain their existing whole-input envelopes.

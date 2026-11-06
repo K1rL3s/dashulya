@@ -32,6 +32,7 @@ from tests.support import (
     MemoryOverride,
     ModelOverrides,
     RecorderOverride,
+    group_records,
     group_rows,
     reply_json,
 )
@@ -285,8 +286,8 @@ class TestGroupContext:
             if isinstance(part, TextInput)
         ]
         assert "We were discussing cats" in "\n".join(requests)
-        assert "User 99: Boris" in requests[1]
-        assert group_rows(requests[-1])[-1][4] == 3
+        assert '"user_id":99,"user":"Boris"' in requests[1]
+        assert group_records(requests[-1])[-1]["reply_to"] == 3
         earlier_bot = [
             event
             for event in events

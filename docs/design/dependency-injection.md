@@ -26,7 +26,7 @@ ai/
   tools/memory.py        Bounded recall over the async backend interface
   tools/history.py       Canonical original reads, counts and pagination
   embeddings.py          Embedding provider/model policy
-  message_format.py      Incremental author/date declarations and message records
+  message_format.py      Per-message author metadata, calendar headings and records
   dialogue.py            Reply context, conversation history, turn locking, and reset
   addressing.py          Direct-address recognition and classification
   prompts.py             Persona and response instructions
@@ -134,8 +134,8 @@ The reply prompts use Markdown headings and semantic XML sections for persona,
 reaction initiative, input provenance, reply workflow, delivery rules, shared
 input/citation semantics, historical evidence policy and web policy. Both agents
 receive shared provenance and message-format system-prompt fragments; context and memory
-blocks contain data with incremental author/date declarations and time/JSON
-headers followed by original text. Tool
+blocks contain calendar headings and time/JSON headers with author metadata on
+every message, followed by original text. Tool
 docstrings own call parameters, result meanings and recovery contracts; these
 are not repeated in the shared prompts. The addressing classifier has its own
 intent rules alongside those shared fragments. User inputs and tool evidence use

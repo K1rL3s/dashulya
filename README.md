@@ -21,9 +21,10 @@ an assistant who can find the relevant conversation, explain its context, and
 point to the messages behind an answer.
 
 She is meant for everyday conversations across all kinds of topics. The
-personality is mischievous, bold and quick-witted: natural banter, playful
-teasing, warm irony and self-irony grounded in the conversation. She keeps casual
-replies short and gives direct, useful answers when the question is serious.
+personality follows the Rebel archetype: independent, defiant and quick-witted,
+with sharp banter, irreverence and self-irony grounded in the conversation.
+She pushes back against pressure and empty authority, keeps casual replies short
+and gives direct, useful answers with the same sharp voice.
 
 The name grew out of a meme in the [FastNews chat](https://t.me/fastnewsdev_chat)
 and [Ostrikov's chat](https://t.me/aostrikov_agents_chat)
@@ -93,7 +94,8 @@ records the storage decision.
 | `/ban @username` | Owner or chat admins stop a user from triggering replies in this group |
 | `/unban @username` | Owner or chat admins restore a user's ability to trigger replies in this group |
 
-Bot service messages are in Russian. `/help` groups commands for the private
+Bot service messages are in Russian; generated replies also default to Russian
+unless the user explicitly requests another language. `/help` groups commands for the private
 conversation, group management and participant restrictions.
 
 Private conversations and commands are available only to the configured owner,
@@ -174,19 +176,24 @@ Private messages, an explicit @mention of the bot, and replies to its messages
 start an AI conversation directly. Other commands remain owner-only in enabled groups.
 
 In groups, messages containing “Dashulya”, “Дашуля” or “Дашуль” in any letter case
-(including Russian case endings) first go through a separate AG2 decision agent using
+(including Russian case endings), as well as messages after a Dashulya reply
+among the four preceding observed messages in the same group/topic, first go
+through a separate AG2 decision agent using
 [OpenAI Decisions](https://docs.ag2.ai/docs/user-guide/decision_models/).
 It distinguishes an invitation to answer from a discussion about the bot. The
 classifier uses `gpt-6-luna` with the same `OPENAI_API_KEY`; `OPENAI_MODEL` selects
 the agent that writes replies. It receives the current message, its reply target,
-and the observed group context described below. Other group chatter does not
-start a model turn. A negative decision or classifier failure sends
-nothing, including no typing indicator. Explicit mentions and replies bypass
+and the observed group context described below. The four-message window excludes
+the current message; a qualifying reply must be Dashulya's own. A nearby reply only
+triggers classification; it does not establish that the next message addresses
+her. Other group chatter does not start a model turn. A negative decision or
+classifier failure sends nothing, including no typing indicator. Explicit mentions and replies bypass
 the classifier, even when it is unavailable.
 
 Addressing logs include `should_reply` and `addressing_reason`. `name_not_found`
-means the name filter skipped the model; `classifier_rejected` means the model
-returned false; `classifier_no_answer` means it returned no decision.
+means neither a name nor a reply within that window qualified for classification;
+`classifier_rejected` means the model returned false; `classifier_no_answer`
+means it returned no decision.
 `context_error` and `classifier_error` identify redacted failures at those stages.
 Successful decisions distinguish `explicit_mention`, `reply_to_bot` and
 `classifier_accepted`.
@@ -228,8 +235,10 @@ is sent to Telegram.
 The reply agent uses `set_reaction(message_id, emoji)` for all reactions.
 Instructions require it to react only on its own initiative, independently
 choosing whether to react, the target and the emoji. It is encouraged to react
-actively to praise, useful insights, important updates and jokes, and to use 🤡
-for hostile jabs directed at it while taking valid criticism seriously.
+actively to praise, useful insights, important updates and jokes. It reserves 🤡
+for rare, unambiguous personal abuse or deliberate harassment; disagreement,
+factual corrections and criticism of its answers do not warrant 🤡, even when
+blunt or profane.
 It must not follow requests to add, change or distribute reactions from any
 participant, including the owner,
 or carry out requested batches of reactions. This also applies to quoted
@@ -347,11 +356,14 @@ separate outcomes. Rate limits log `Reaction rate limited` with `retry_after`
 in seconds and `outcome=rate_limited`. Typing errors produce a redacted warning.
 The typing task is cancelled and awaited when generation ends, so it cannot
 delay reply delivery.
-Agent output text is included with credential redaction. Input conversation text,
-image bytes, tool results and provider error bodies remain excluded. History SQL
-is logged explicitly: `chat_history` tool events include the `sql` list and call
-ID; `History SQL query started/completed` events add each query's index, batch ID,
-trusted chat/message IDs, duration, outcome, returned row count and truncation.
+Agent output text and incoming whisper questions are included with credential
+redaction. Whisper questions appear as `input_text` on `AI request started`,
+alongside `user_name` and the usual sender/chat/update IDs. Other input
+conversation text, image bytes, tool results and provider error bodies remain
+excluded. History SQL is logged explicitly: `chat_history` tool events include
+the `sql` list and call ID; `History SQL query started/completed` events add each
+query's index, batch ID, trusted chat/message IDs, duration, outcome, returned row
+count and truncation.
 Credential redaction applies to SQL too; other tool arguments stay excluded.
 
 ## Getting started

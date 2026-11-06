@@ -58,7 +58,10 @@ class GroupAddressing:
             for username in message.mentioned_usernames
         ):
             return AddressingDecision(True, "explicit_mention")
-        if _AGENT_NAME_PATTERN.search(message.text) is None:
+        recent_answer = any(
+            item.get("role") == "assistant" for item in recent_conversation[-4:]
+        )
+        if _AGENT_NAME_PATTERN.search(message.text) is None and not recent_answer:
             return AddressingDecision(False, "name_not_found")
         # Each classification has a fresh stream; decisions never enter reply history.
         async with asyncio.timeout(12):

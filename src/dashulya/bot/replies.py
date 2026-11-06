@@ -61,7 +61,10 @@ class ReplyDelivery:
             update_id=update_id,
         )
         fields = reply_log_fields(request)
-        logger.info("AI request started", extra=fields)
+        logger.info(
+            "AI request started",
+            extra={**fields, "user_name": request.user_name, "input_text": request.text},
+        )
         try:
             member = await self._bot.get_chat_member(
                 message.chat.id, self._bot.id, request_timeout=3

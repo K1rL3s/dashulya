@@ -1008,8 +1008,8 @@ class TestMemoryAccessIntegration:
         context = await dialogue.recent_context((GROUP, None), through_message_id=3)
         rendered = str(context)
         assert "Sender is bot:" not in rendered
-        assert "User 100:" in rendered
-        assert "@agent_name, bot" in rendered
+        assert '"user_id":100,"user":"Agent"' in rendered
+        assert '"username":"agent_name","bot":true' in rendered
         assert (
             '\n<external_input source="bot">\nA bot assertion\n</external_input>'
             in (context[-1]["text"])

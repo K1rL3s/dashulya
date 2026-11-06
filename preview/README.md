@@ -27,14 +27,18 @@ use saved file references and the bot's shared event builder without downloading
 bytes; actual availability, decoding and byte-budget omissions are not simulated.
 The JSON view explicitly marks unloaded bytes and unknown MIME types.
 
-Each event shows a local day and author declaration where first applicable,
-then a time/JSON metadata line. All of that metadata precedes `external_input`;
+Each event shows a local day heading where needed, then a time/JSON metadata
+line. Every message includes `message_id`, `user_id` and `user` (the display
+name), including the bot's own messages. Optional `username`, `bot` and
+`author_user` preserve observed handles, known bot flags and configured authorship
+bindings. Only `bot:true` is emitted for known bots; false and unknown flags are
+omitted. There are no separate author declarations. Optional `reply_to` holds the
+original parent message ID and is omitted for messages without a parent.
+All of that metadata precedes `external_input`;
 only the source text and attached-media notes are inside the envelope. The shared
-chat header has no envelope. This bot has no
-author declaration because its assistant role identifies it. Only the last
-record includes `Interlocutor user id`. Later author aliases update the
-declaration where observed, preserving earlier records. Truncated-chain
-navigation appears in the boundary message's JSON.
+chat header has no envelope. Only the last record includes `Interlocutor user id`.
+Names and flags belong to their original message, preserving earlier records.
+Truncated-chain navigation appears in the boundary message's JSON.
 
 The compact **Recent ↑** and **Hops** inputs adjust selection immediately for
 the selected message. Recent accepts any positive message count, including

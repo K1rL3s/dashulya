@@ -517,7 +517,9 @@ def _validate_replies(
     if not messages:
         if result is not None and reactions_attempted:
             return ReplyBatch(())
-        return ReplyBatch((Reply("I couldn't generate a text reply. Please try again."),))
+        return ReplyBatch((
+            Reply("Сейчас не удалось подготовить ответ. Попробуй ещё раз."),
+        ))
     validated: list[Reply] = []
     for index, item in enumerate(messages):
         if item.reply_to_message_id is None:
