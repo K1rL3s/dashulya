@@ -7,6 +7,7 @@ from ag2 import Agent
 from dashulya.ai.message_format import external_input, input_source
 from dashulya.domain.messages import (
     AddressingDecision,
+    ContinuationAction,
     GroupMessage,
 )
 
@@ -21,11 +22,13 @@ class GroupAddressing:
         self,
         agent: Agent[bool],
         *,
+        continuation_agent: Agent[ContinuationAction],
         bot_id: int,
         bot_username: str,
         owner_id: int | None = None,
     ) -> None:
         self._agent = agent
+        self._continuation_agent = continuation_agent
         self._bot_id = bot_id
         self._bot_username = bot_username.casefold()
         self._owner_id = owner_id
@@ -58,14 +61,40 @@ class GroupAddressing:
             for username in message.mentioned_usernames
         ):
             return AddressingDecision(True, "explicit_mention")
+        if _AGENT_NAME_PATTERN.search(message.text) is not None:
+            decision = await self._classify(self._agent, message, recent_conversation)
+            if decision is None:
+                return AddressingDecision(False, "classifier_no_answer")
+            if decision is True:
+                return AddressingDecision(True, "classifier_accepted")
+            return AddressingDecision(False, "classifier_rejected")
+        if original is not None:
+            return AddressingDecision(False, "reply_to_other")
         recent_answer = any(
             item.get("role") == "assistant" for item in recent_conversation[-4:]
         )
-        if _AGENT_NAME_PATTERN.search(message.text) is None and not recent_answer:
+        if not recent_answer:
             return AddressingDecision(False, "name_not_found")
+        action = await self._classify(
+            self._continuation_agent, message, recent_conversation
+        )
+        if action is None:
+            return AddressingDecision(False, "continuation_no_answer")
+        if action is ContinuationAction.TEXT:
+            return AddressingDecision(True, "continuation_accepted")
+        if action is ContinuationAction.IGNORE:
+            return AddressingDecision(False, "continuation_rejected")
+        return AddressingDecision(False, "continuation_reaction", reaction=action.value)
+
+    async def _classify[T](
+        self,
+        agent: Agent[T],
+        message: GroupMessage,
+        recent_conversation: list[dict[str, str]],
+    ) -> T | None:
         # Each classification has a fresh stream; decisions never enter reply history.
         async with asyncio.timeout(12):
-            reply = await self._agent.ask(
+            reply = await agent.ask(
                 external_input(
                     json.dumps(
                         {
@@ -81,9 +110,4 @@ class GroupAddressing:
                     ),
                 )
             )
-            decision = await reply.content()
-            if decision is None:
-                return AddressingDecision(False, "classifier_no_answer")
-            if decision is True:
-                return AddressingDecision(True, "classifier_accepted")
-            return AddressingDecision(False, "classifier_rejected")
+            return await reply.content()

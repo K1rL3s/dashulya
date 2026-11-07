@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -11,7 +12,7 @@ from aiogram.methods import SendMessage, SendRichMessage, SendSticker, TelegramM
 from aiogram.methods.base import Response, TelegramType
 from aiogram.types import Message, TelegramObject, Update
 
-from dashulya.bot.messages import capture_message, is_whisper
+from dashulya.bot.messages import capture_message, is_whisper, reply_trigger_id
 from dashulya.bot.presentation import rich_html_text
 from dashulya.domain.groups import GroupRegistry
 from dashulya.domain.memory import MessageRecorder
@@ -110,21 +111,31 @@ class CaptureSentMessagesMiddleware(BaseRequestMiddleware):
                 if isinstance(method, SendRichMessage)
                 else None
             )
-            await capture_message(
-                self._recorder,
-                response.model_copy(
-                    update={
-                        "message_thread_id": method.message_thread_id
-                        or response.message_thread_id,
-                        "is_topic_message": response.is_topic_message
-                        or method.message_thread_id is not None,
-                    }
-                ),
-                text=response.text or text,
-                reply_to_id=method.reply_parameters.message_id
-                if method.reply_parameters
-                else None,
-                allow_private=response.chat.type == ChatType.PRIVATE
-                and response.chat.id == self._owner_user_id,
+            saved = response.model_copy(
+                update={
+                    "message_thread_id": method.message_thread_id
+                    or response.message_thread_id,
+                    "is_topic_message": response.is_topic_message
+                    or method.message_thread_id is not None,
+                }
             )
+            capture = asyncio.create_task(
+                capture_message(
+                    self._recorder,
+                    saved,
+                    text=response.text or text,
+                    reply_to_id=method.reply_parameters.message_id
+                    if method.reply_parameters
+                    else None,
+                    allow_private=response.chat.type == ChatType.PRIVATE
+                    and response.chat.id == self._owner_user_id,
+                    trigger_message_id=reply_trigger_id(saved),
+                )
+            )
+            try:
+                await asyncio.shield(capture)
+            except asyncio.CancelledError:
+                # Telegram has already returned an original: retain it before stopping.
+                await capture
+                raise
         return response

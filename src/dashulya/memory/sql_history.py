@@ -468,7 +468,7 @@ class SqlHistory:
                 "'source:' || left(encode(sha256(convert_to(collection,'UTF8')),'hex'),24) || ':' || message_id AS source_id, "
                 "collection AS chat, chat_id, message_id, body AS text, sent_at, "
                 "author_id, author, author_username AS username, is_bot, chat_title, chat_username, "
-                "topic_id, reply_to_id AS reply_to_message_id, edited_at, media_type, url, provenance, archive_key "
+                "topic_id, reply_to_id AS reply_to_message_id, quoted_text, edited_at, media_type, url, provenance, archive_key "
                 "FROM messages WHERE {}"
             ).format(self._condition())
         )

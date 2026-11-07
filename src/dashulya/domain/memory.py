@@ -52,6 +52,8 @@ class MemoryMessage:
     username: str | None = None
     is_bot: bool | None = None
     image_file: ImageFile | None = None
+    quoted_text: str | None = None
+    trigger_message_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -65,11 +67,23 @@ class TruncatedThread:
 
 
 @dataclass(frozen=True)
+class ContextWindow:
+    """One triggering request's original selection, before prefix deduplication."""
+
+    anchor_id: int
+    messages: tuple[MemoryMessage, ...]
+    truncated_threads: tuple[TruncatedThread, ...] = ()
+    answer_id: int | None = None
+
+
+@dataclass(frozen=True)
 class ReplyContext:
     """Bounded source messages and navigation metadata for omitted ancestors."""
 
     messages: tuple[MemoryMessage, ...] = ()
     truncated_threads: tuple[TruncatedThread, ...] = ()
+    windows: tuple[ContextWindow, ...] = ()
+    unresolved_answer_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -93,6 +107,7 @@ class OriginalMessage:
     username: str | None = None
     is_bot: bool | None = None
     image_file: ImageFile | None = None
+    quoted_text: str | None = None
 
     @property
     def source_id(self) -> str:
@@ -118,6 +133,7 @@ class OriginalMessage:
             "author_id": self.author_id,
             "author": self.author,
             "reply_to_message_id": self.reply_to_id,
+            "quoted_text": self.quoted_text,
             "edited_at": self.edited_at,
             "media_type": self.media_type,
             "is_bot": self.is_bot,

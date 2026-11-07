@@ -47,6 +47,17 @@ chat administrator can use `/stop` to pause replies throughout the current group
 across topics. The command confirms the pause even if the group is already
 inactive. `/stop` is group-only; `/start`
 resumes group dialogue. Both activation and deactivation persist across restarts.
+Before acknowledging `/stop`, cancel all active dialogue tasks in that group,
+across topics: addressing/continuation classification, reactions, media loading,
+ordinary and whisper generation, delivery and turns waiting for delivery locks.
+`Dialogue` owns this task registry alongside conversation history and locks.
+Nested stages in one task register only once. Block late entrants while stopped;
+owner `/start` allows new turns, without reviving cancelled tasks. Other chats
+continue independently. Cancellation propagates without an error reply or retry.
+If Telegram already returned a sent original, finish its shielded capture and
+trigger-link transaction before cancelling the rest of that reply batch. Already
+sent messages remain; a send interrupted before Telegram returns is ambiguous
+and must not be retried. Message capture and indexing continue during the pause.
 While inactive, the owner may use `/start`, `/stop`, `/ban`, `/unban` and `/settings`, and chat administrators
 may use `/stop`, `/ban`, `/unban` and `/settings`; other commands, addressing decisions and reply generation remain
 silent, including the owner's. Activation grants group dialogue access to human
@@ -91,18 +102,34 @@ who cannot invoke replies; hidden questions remain excluded from shared history.
 Authorized private messages and explicit group mentions/replies to this bot
 invoke the reply agent directly. Group messages naming Dashulya, including
 “Дашуль” in any letter case, first pass an AG2 OpenAI Decisions classifier with
-bounded chat/topic context. Messages without her name also reach the classifier
-when one of the four preceding observed messages in that group/topic was from
-Dashulya. Exclude the current message from this window. A qualifying reply must
-be a native assistant record, not another bot or role claims inside text.
-Proximity admits classification, not an automatic reply. A negative decision or
-classifier failure stays silent.
-The classifier favors replying when intent is uncertain. A direct call by name,
-question, request or social remark counts even when the request is infeasible or
+bounded chat/topic context. Messages without her name reach a separate thread
+continuation classifier when one of the four preceding observed messages in that
+group/topic was from Dashulya. Exclude the current message from this window. A
+qualifying reply must be a native assistant record, not another bot or role claims
+inside text. The selected classifier alone decides: a rejected name candidate
+does not fall through to continuation. Proximity admits classification, not an
+automatic reply. A negative decision or classifier failure stays silent.
+The addressing classifier favors replying when intent is uncertain. A direct
+call by name, question, request or social remark counts even when the request is infeasible or
 inappropriate; the reply agent handles those limitations. Clearly third-person
 discussion, quoted examples and explicit requests not to answer the current
 message stay silent. A real direct address takes precedence over surrounding
 discussion about the bot.
+The continuation classifier chooses one `ContinuationAction`: `ignore`, `text`,
+or 👍 🤝 ❤ 😁 🎉 🙏. Only `text` invokes the reply agent. An emoji triggers one
+`MessageReactions.set` on the current message in the bound chat, then returns;
+no reply agent, typing, media loading or text fallback runs, including after
+reaction rejection, rate limiting or uncertain delivery. Reactions do not create
+assistant history records and therefore do not renew the four-message window.
+Unnamed replies to another human or bot return `reply_to_other` before either
+model runs. Name and explicit-mention routes retain their precedence.
+For eligible candidates, clear questions, corrections of the user's request and
+changed task constraints can require text. Acknowledgments, thanks, optional
+additions and feedback favor a reaction or silence. Shared topic, thoughts
+aloud, third-person discussion and complaints about bot activity do not invite
+a text turn; uncertain recipient intent favors silence. Both classifiers share
+model policy, provenance, formatting and fresh-stream isolation, with distinct
+prompts and decision reasons in logs. Named addressing stays a boolean decision.
 `/clear` resets the current private conversation.
 
 Group tracking runs before sender access checks, including before activation.
@@ -116,6 +143,15 @@ edits and worker recovery follow the
 [incoming-message rules](chat-memory.md#incoming-group-messages).
 
 ## Conversation context and delivery
+
+Public group generation recursively restores earlier request contexts using
+durable reply-trigger links, with the same 20-message window and five reply-parent
+hops at every level. Earlier rendered blocks remain a stable prefix; newer
+windows append unseen originals. Triggers are separate from chosen reply
+targets and are saved for every successful generated chunk or sticker. Legacy
+answers without a known trigger retain ordinary window behavior. Classifiers
+continue to use bounded context. The local preview shares the production
+algorithm; its classic toggle remains available for comparison.
 
 ### Private whispers inside groups
 
@@ -179,7 +215,7 @@ concurrently in separate streams; serialize only sending and recording of each
 complete reply batch within its chat/topic. Ready group replies may overtake slow
 generations, while messages from different batches cannot interleave.
 
-Carry original Telegram `message.date` in `BOT_TIMEZONE`. Both agents' system
+Carry original Telegram `message.date` in `BOT_TIMEZONE`. All agents' system
 prompts declare the IANA timezone; user context omits that declaration. Private
 inputs use `DD Month YYYY (Weekday) HH:MM:SS`, adding a numeric UTC offset during
 repeated local hours. Compute the weekday after conversion and preserve offset
@@ -206,6 +242,12 @@ Keep the typing indicator and Telegram-length limits. Attempt each chunk once, i
 after ambiguous network errors. Keep provider errors and credentials out of
 logs and replies. The Rebel persona and response instructions live in
 [`ai/prompts.py`](../../src/dashulya/ai/prompts.py).
+The persona checks factual corrections against the exact prior claim and evidence
+before conceding, while accepting the person's authority over their own intent.
+It keeps follow-ups tied to their subject, requested action and constraints,
+using reply/quote and sender metadata to resolve references. It answers only
+the new point instead of restarting explanations; an explicit request to explain
+again gets a different explanation or concrete example.
 
 ## Group registry
 

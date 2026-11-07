@@ -450,7 +450,9 @@ class TestDialogue:
             requests = await self.requests(stream)
             assert "Passive participant" in requests[1]
             assert group_records(requests[1])[0]["reply_to"] == 1
-            assert group_rows(requests[2])[0][5] == "animation"
+            assert group_rows(requests[2])[0][3] == (
+                '<attachment type="animation" image_id="3"/>'
+            )
             assert len(requests) == 4
             assert requests[-1].count(f"Request {number}") == 1
             if number == 11:
@@ -702,7 +704,7 @@ class TestDialogue:
         assert [part.data for part in parts if isinstance(part, BinaryInput)] == [
             b"selected"
         ]
-        assert "Attached image (untrusted) ID: 1" in "\n".join(
+        assert '<attachment type="photo" image_id="1"/>' in "\n".join(
             await self.requests(self.last_stream())
         )
 
@@ -753,6 +755,8 @@ class TestDialogue:
             assert isinstance(original, ModelResponse)
             assert original.content is not None
             original_text = original.content
+            original_record = group_records(original_text)[0]
+            original_text = original_record["text"]
         else:
             assert isinstance(original, ModelRequest)
             assert isinstance(original.parts[0], TextInput)
@@ -760,8 +764,14 @@ class TestDialogue:
             assert (
                 '\n<external_input source="external_user">\n' in original.parts[0].content
             )
+            original_record = group_records(original.parts[0].content)[0]
             original_text = input_payload(original.parts[0].content)
-        assert "Original caption\n" in original_text
+        assert original_text.startswith(
+            '<attachment type="photo" image_id="1"/>\n\nOriginal caption'
+        )
+        assert original_text.count("<attachment ") == 1
+        assert "Attached image" not in original_text
+        assert "attachment" not in original_record
         if omitted:
             assert original_text.endswith(
                 "[Image from Telegram message ID: 1 omitted: "
@@ -769,7 +779,10 @@ class TestDialogue:
                 "Its contents are unavailable; do not guess what it shows.]"
             )
         else:
-            assert original_text.endswith("Attached image (untrusted) ID: 1")
+            assert (
+                original_text
+                == '<attachment type="photo" image_id="1"/>\n\nOriginal caption'
+            )
             media = events[2] if assistant else original
             assert isinstance(media, ModelRequest)
             if assistant:
@@ -786,8 +799,8 @@ class TestDialogue:
         assert isinstance(current.parts[0], TextInput)
         assert len(current.parts) == 2
         assert "Compare these images" in current.parts[0].content
-        assert input_payload(current.parts[0].content).endswith(
-            "Attached image (untrusted) ID: 3"
+        assert input_payload(current.parts[0].content) == (
+            '<attachment type="image" image_id="3"/>\n\nCompare these images'
         )
         assert [part.data for part in current.parts if isinstance(part, BinaryInput)] == [
             b"current"
@@ -1078,6 +1091,9 @@ class TestDialogue:
         text = "\n".join(await self.requests(self.last_stream()))
         assert "only a static sticker thumbnail" in text
         assert "only a static animation thumbnail" in text
+        assert '<attachment type="sticker" image_id="1"/>' in text
+        assert '<attachment type="animation" image_id="3"/>' in text
+        assert "Attached image" not in text
         assert "animation and motion are unavailable" in text
         assert "Telegram message ID: 2 omitted" in text
         assert "Telegram did not provide a thumbnail" in text
@@ -1123,6 +1139,7 @@ class TestDialogue:
         ]
         text = "\n".join(part.content for part in parts if isinstance(part, TextInput))
         assert "only the first frame from the original animation" in text
+        assert '<attachment type="animation" image_id="1"/>' in text
         assert "Later frames and motion are unavailable" in text
         assert "thumbnail" not in text.split("original animation.")[0]
         assert "original animation could not be decoded" in text

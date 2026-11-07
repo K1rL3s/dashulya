@@ -4,13 +4,14 @@ from contextlib import AsyncExitStack
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx2
 import pytest
-from ag2 import Agent
 from ag2.config import OpenAIDecisionsConfig, OpenAIResponsesConfig
 from ag2.testing import TestConfig, TrackingConfig
+from aiogram import Bot
+from aiogram.types import User
 from pydantic import ValidationError
 
 from dashulya.ai.addressing import GroupAddressing
@@ -18,6 +19,7 @@ from dashulya.ai.agents.factory import create_reply_agent
 from dashulya.ai.dialogue import Dialogue
 from dashulya.domain.memory import ChatHistory, MemoryBackend, MemoryMessage, ReplyContext
 from dashulya.domain.messages import (
+    ContinuationAction,
     GroupMessage,
     ImageAttachment,
     Reply,
@@ -27,7 +29,13 @@ from dashulya.domain.messages import (
 from dashulya.main import create_container
 from dashulya.main.config import Settings
 from dashulya.observability import JsonLogFormatter
-from tests.support import TEST_API_KEY, MemoryOverride, ModelOverrides, reply_json
+from tests.support import (
+    TEST_API_KEY,
+    BotOverride,
+    MemoryOverride,
+    ModelOverrides,
+    reply_json,
+)
 
 
 @pytest.mark.parametrize("count", [0, 1, 2, 3, 4])
@@ -191,7 +199,7 @@ class TestAgentAPI:
                 )
                 assert result == ReplyBatch((Reply("Fresh answer", 1),))
         assert len(requests) == 2
-        for request in requests:
+        for message_id, request in zip((3, 4), requests, strict=True):
             output_format = request["text"]["format"]
             assert output_format["type"] == "json_schema"
             assert output_format["strict"]
@@ -217,7 +225,9 @@ class TestAgentAPI:
                 "user",
                 "user",
             ]
-            assert "Attached image (untrusted) ID:" in json.dumps(messages[-2])
+            source_text = messages[-2]["content"][0]["text"]
+            assert f'<attachment type="image" image_id="{message_id}"/>' in source_text
+            assert "Attached image" not in source_text
             image = messages[-1]["content"][0]
             assert image["type"] == "input_image"
             assert image["detail"] == "high"
@@ -230,7 +240,10 @@ class TestAgentAPI:
             assert "Fresh answer" not in json.dumps(messages)
         assert "Current request 3" not in json.dumps(requests[1]["input"])
 
-    async def test_addressing_uses_decisions_predicate_and_typed_answers(self) -> None:
+    @pytest.mark.parametrize("continuation", [False, True])
+    async def test_addressing_uses_decisions_predicate_and_typed_answers(
+        self, continuation: bool
+    ) -> None:
         self.settings = replace(self.settings, bot_timezone="Asia/Tokyo")
         requests: list[dict[str, Any]] = []
 
@@ -238,17 +251,33 @@ class TestAgentAPI:
             assert request.url.path == "/v1/decisions"
             body = json.loads(request.content)
             requests.append(body)
+            choice = "text" if len(requests) == 1 else "ignore"
+            answer = (
+                {
+                    "type": "choice",
+                    "name": body["questions"][0]["name"],
+                    "choice": choice,
+                    "confidence": 0.9,
+                    "probabilities": [
+                        {
+                            "value": action.value,
+                            "probability": 0.9 if action.value == choice else 0.1 / 7,
+                        }
+                        for action in ContinuationAction
+                    ],
+                }
+                if continuation
+                else {
+                    "type": "predicate",
+                    "name": body["questions"][0]["name"],
+                    "probability": 0.9 if len(requests) == 1 else 0.1,
+                }
+            )
             return httpx2.Response(
                 200,
                 json={
                     "model": "gpt-6-luna",
-                    "answers": [
-                        {
-                            "type": "predicate",
-                            "name": body["questions"][0]["name"],
-                            "probability": 0.9 if len(requests) == 1 else 0.1,
-                        }
-                    ],
+                    "answers": [answer],
                     "usage": {
                         "input_tokens": 10,
                         "output_tokens": 0,
@@ -263,8 +292,11 @@ class TestAgentAPI:
             )
 
         async with httpx2.AsyncClient(transport=httpx2.MockTransport(respond)) as client:
+            bot = Bot(self.settings.bot_token)
+            self.cleanup.push_async_callback(bot.session.close)
             container = create_container(
                 self.settings,
+                BotOverride(bot),
                 ModelOverrides(
                     reply=OpenAIResponsesConfig(model="unused", api_key=TEST_API_KEY),
                     decision=OpenAIDecisionsConfig(
@@ -275,31 +307,62 @@ class TestAgentAPI:
                 ),
             )
             self.cleanup.push_async_callback(container.close)
-            classifier = await container.get(Agent[bool])
-            addressing = GroupAddressing(
-                classifier, bot_id=123, bot_username="dashulya_bot"
+            with patch.object(
+                bot,
+                "me",
+                AsyncMock(
+                    return_value=User(
+                        id=bot.id,
+                        is_bot=True,
+                        first_name="Dashulya",
+                        username="dashulya_bot",
+                    )
+                ),
+            ):
+                addressing = await container.get(GroupAddressing)
+            recent = (
+                [{"role": "assistant", "text": "Here is yesterday's summary"}]
+                if continuation
+                else []
             )
             assert await addressing.should_reply(
                 GroupMessage(
-                    1, "Дашуля, помоги", datetime(2026, 10, 25, tzinfo=UTC), 42, "Anna"
-                ),
-                recent_conversation=[],
-            )
-            assert not await addressing.should_reply(
-                GroupMessage(
-                    2,
-                    "Дашуля вчера сказала",
+                    1,
+                    "And for the whole week?" if continuation else "Дашуля, помоги",
                     datetime(2026, 10, 25, tzinfo=UTC),
                     42,
                     "Anna",
                 ),
-                recent_conversation=[],
+                recent_conversation=recent,
+            )
+            assert not await addressing.should_reply(
+                GroupMessage(
+                    2,
+                    "A separate conversation" if continuation else "Дашуля вчера сказала",
+                    datetime(2026, 10, 25, tzinfo=UTC),
+                    42,
+                    "Anna",
+                ),
+                recent_conversation=recent,
             )
 
         assert len(requests) == 2
         for request in requests:
             assert request["model"] == "gpt-6-luna"
-            assert request["questions"][0]["type"] == "predicate"
+            assert request["questions"][0]["type"] == (
+                "choice" if continuation else "predicate"
+            )
+            if continuation:
+                assert {v["value"] for v in request["questions"][0]["choices"]} == {
+                    "ignore",
+                    "text",
+                    "👍",
+                    "🤝",
+                    "❤",
+                    "😁",
+                    "🎉",
+                    "🙏",
+                }
             assert "tools" not in request
             assert "reasoning" not in request
             assert len(request["input"]) == 1
@@ -311,6 +374,9 @@ class TestAgentAPI:
                 == 1
             )
             assert "Asia/Tokyo" not in json.dumps(request["input"])
+            questions = json.dumps(request["questions"])
+            assert ("<thread_continuation_workflow>" in questions) is continuation
+            assert ("<addressing_workflow>" in questions) is not continuation
 
     async def test_reasoning_with_memory_uses_responses_and_executes_tool(self) -> None:
         requests: list[dict[str, Any]] = []

@@ -5,6 +5,7 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import BotCommand, BotCommandScopeAllGroupChats, Message
 from dishka.integrations.aiogram import FromDishka, inject
 
+from dashulya.ai.dialogue import Dialogue
 from dashulya.bot.middlewares.group_tracking import GROUP_TYPES
 from dashulya.domain.groups import GroupRegistry
 
@@ -44,9 +45,12 @@ async def register_group_commands(bot: Bot) -> None:
 
 
 @inject
-async def start(message: Message, groups: FromDishka[GroupRegistry]) -> None:
+async def start(
+    message: Message, groups: FromDishka[GroupRegistry], dialogue: FromDishka[Dialogue]
+) -> None:
     if message.chat.type in GROUP_TYPES:
         await groups.activate(message.chat.id)
+        await dialogue.resume(message.chat.id)
         await message.answer(
             "Теперь я отвечаю в этой группе 💋\n"
             "Упомяните меня через @, ответьте на моё сообщение или позовите Дашулю."
@@ -60,8 +64,11 @@ async def start(message: Message, groups: FromDishka[GroupRegistry]) -> None:
 
 
 @inject
-async def stop(message: Message, groups: FromDishka[GroupRegistry]) -> None:
+async def stop(
+    message: Message, groups: FromDishka[GroupRegistry], dialogue: FromDishka[Dialogue]
+) -> None:
     await groups.deactivate(message.chat.id)
+    await dialogue.stop(message.chat.id)
     group = await groups.get(message.chat.id)
     capture_status = (
         "Сообщения продолжают сохраняться. "

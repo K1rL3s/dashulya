@@ -1,6 +1,7 @@
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Annotated
 
+import httpx2 as httpx
 from ag2 import Agent, Context, Inject
 from ag2.middleware import Middleware
 from ag2.tools import CodeExecutionTool
@@ -10,7 +11,11 @@ from dishka_ag2 import AG2Scope, DishkaAsyncMiddleware
 from fast_depends import inject
 
 from dashulya.ai.addressing import GroupAddressing
-from dashulya.ai.agents.factory import create_decision_agent, create_reply_agent
+from dashulya.ai.agents.factory import (
+    create_continuation_agent,
+    create_decision_agent,
+    create_reply_agent,
+)
 from dashulya.ai.agents.models import AgentModels, create_models
 from dashulya.ai.dialogue import Dialogue
 from dashulya.ai.message_format import MessageFormatter
@@ -18,6 +23,7 @@ from dashulya.ai.tools.history import chat_history, retry_image
 from dashulya.ai.tools.memory import search_memory
 from dashulya.ai.tools.reactions import set_reaction
 from dashulya.ai.tools.web import create_web_tools
+from dashulya.ai.tools.youtube import YouTubeTranscripts, youtube_transcript
 from dashulya.domain.memory import (
     ChatHistory,
     ChatMemoryService,
@@ -97,11 +103,20 @@ class AgentProvider(Provider):
                 chat_history,
                 retry_image,
                 set_reaction,
+                youtube_transcript,
                 CodeExecutionTool(),
                 *create_web_tools(settings.keenable_api_key),
             ],
             middleware=[Middleware(DishkaAsyncMiddleware, container=container)],
         )
+
+    @provide
+    async def youtube_transcripts(self) -> AsyncIterator[YouTubeTranscripts]:
+        client = httpx.AsyncClient(timeout=15)
+        try:
+            yield YouTubeTranscripts(client)
+        finally:
+            await client.aclose()
 
     @provide(scope=AG2Scope.SESSION)
     def memory_access(self, context: Context) -> MemoryAccess:
@@ -141,10 +156,18 @@ class AgentProvider(Provider):
         agent: Agent[bool],
         bot: Bot,
         formatter: MessageFormatter,
+        models: AgentModels,
+        container: AsyncContainer,
+        settings: Settings,
     ) -> GroupAddressing:
         me = await bot.me()
         return GroupAddressing(
             agent,
+            continuation_agent=create_continuation_agent(
+                models.decision,
+                timezone=settings.bot_timezone,
+                middleware=[Middleware(DishkaAsyncMiddleware, container=container)],
+            ),
             bot_id=me.id,
             bot_username=me.username or "",
             owner_id=formatter.owner_id,

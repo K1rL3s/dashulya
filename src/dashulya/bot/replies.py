@@ -14,7 +14,7 @@ from dashulya.ai.dialogue import Dialogue
 from dashulya.bot.chat_actions import typing
 from dashulya.bot.formatting import render_markdown
 from dashulya.bot.images import ImageInputError, TelegramImages
-from dashulya.bot.messages import conversation_key, message_text
+from dashulya.bot.messages import conversation_key, message_text, replying_to
 from dashulya.bot.presentation import collapse_entities
 from dashulya.bot.stickers import TelegramStickers
 from dashulya.domain.messages import ImageAttachment, ImageOmission, Reply, ReplyRequest
@@ -43,6 +43,12 @@ class ReplyDelivery:
         self._stickers = stickers
 
     async def whisper(
+        self, message: Message, text: str, *, update_id: int | None = None
+    ) -> None:
+        async with self._dialogue.turn(conversation_key(message)):
+            await self._whisper(message, text, update_id=update_id)
+
+    async def _whisper(
         self, message: Message, text: str, *, update_id: int | None = None
     ) -> None:
         """Generate and deliver a hidden turn, with no public fallback or typing."""
@@ -258,6 +264,10 @@ class ReplyDelivery:
                 progress.stage = "render"
 
     async def reply(self, message: Message) -> None:
+        async with self._dialogue.turn(conversation_key(message)):
+            await self._reply_turn(message)
+
+    async def _reply_turn(self, message: Message) -> None:
         # Private turns share history and include delivery in their ordering.
         async with (
             self._dialogue.delivery(conversation_key(message))
@@ -297,6 +307,7 @@ class ReplyDelivery:
         if message.chat.id > 0 and parent is not None and parent.poll is not None:
             text = f"Reply to poll:\n{message_text(parent)}\n\n{text}"
         async with typing(self._bot, message):
+            generated = False
             try:
                 images = await self._load_images(message) if message.chat.id > 0 else ()
                 reply = await self._dialogue.reply(
@@ -314,6 +325,7 @@ class ReplyDelivery:
                     )
                 )
                 messages = reply.messages
+                generated = True
                 logger.info(
                     "AI reply generated",
                     extra={
@@ -351,7 +363,8 @@ class ReplyDelivery:
                 if message.chat.id < 0
                 else nullcontext()
             ):
-                await self._deliver(message, messages, progress)
+                with replying_to(message) if generated else nullcontext():
+                    await self._deliver(message, messages, progress)
         except Exception as error:
             logger.warning(
                 "AI reply delivery failed",

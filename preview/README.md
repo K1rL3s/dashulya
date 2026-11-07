@@ -20,9 +20,11 @@ event message IDs navigate to their saved originals. The **JSON** tab shows
 the same events as a copyable JSON array. Both panes fill the window, with no
 global header or filter toolbar.
 
-Events show their ordered parts: one `TextInput` with
-`Attached image (untrusted) ID: <message ID>` appended to its original text,
-then an `ImageInput` placeholder in the same card. This bot's images appear in
+Events show their ordered parts: one `TextInput` with a source-body tag such as
+`<attachment type="animation" image_id="347068"/>`, then an `ImageInput`
+placeholder in the same card. The tag comes after any quote and before the
+caption; JSON metadata has no `attachment` field. The tag alone does not imply
+that bytes are available. This bot's images appear in
 a separate user event immediately after its assistant event. Placeholder images
 use saved file references and the bot's shared event builder without downloading
 bytes; actual availability, decoding and byte-budget omissions are not simulated.
@@ -42,6 +44,22 @@ chat header has no envelope. Only the last record includes `Interlocutor user id
 Names and flags belong to their original message, preserving earlier records.
 Truncated-chain navigation appears in the boundary message's JSON.
 
+Captured reply quotes appear in the event body, before the author's reply:
+
+```xml
+<external_input source="external_user">
+<quoted_text from_message="347069">
+The selected original fragment
+</quoted_text>
+
+The author's reply
+</external_input>
+```
+
+The quote is not duplicated in JSON metadata. `from_message` is omitted when
+the parent ID is unknown; messages without a captured quote have no quote block.
+Original language, line breaks and literal source text are preserved.
+
 The compact **Recent ↑** and **Hops** inputs adjust selection immediately for
 the selected message. Recent accepts any positive message count, including
 the selected message; hops accepts any nonnegative number of reply-parent edges
@@ -52,8 +70,8 @@ Selection colors, counts, truncated-chain notes and both event views update
 together.
 
 The **Old / Recursive** toggle compares two selection algorithms for the same
-message. **Old** uses the real bot's selection unchanged. **Recursive** is a
-preview-only experiment:
+message. **Recursive** is the production default. **Old** disables recursive
+expansion for comparison, retaining the same base selector:
 
 1. Build the usual recent window (20 messages including the request) and five
    reply-parent hops from every seed.
@@ -86,20 +104,18 @@ truncated-chain marker may describe an ancestor supplied later in the suffix.
 This is intentional: removing it would change the reused prefix. The **Restored
 prefix** note shows the previous request ID, event/message counts and text size.
 
-The preview verifies triggers against local generation and delivery logs:
-rendered output text must match the saved answer within its delivery interval,
-with exactly one originating request. A reply target is not a trigger: Dashulya
-can choose another recipient or send an unthreaded follow-up. Missing or ambiguous
-matches, including service messages, are skipped and counted in the viewer.
-The next verifiable earlier answer may still expand the context. Compose mounts
-`var/logs` read-only; host startup uses that directory by default, or
-`PREVIEW_LOG_DIR` when set. Log changes refresh the cached matching index.
+The preview uses the same durable `trigger_message_id` links as production.
+Every successful chunk or sticker of a generated public reply records its
+incoming request independently of its reply target. Commands, service messages,
+legacy answers without links, and missing or out-of-topic triggers are skipped
+and counted in the viewer. The next usable earlier answer may still expand
+context. No delivery logs or Telegram calls are needed to resolve anchors.
 
 The content of an earlier recursive preview is reproduced as the newer preview's
-full prefix when data, logs, formatting settings and selection parameters stay
+full prefix when data, formatting settings and selection parameters stay
 the same. Compare roles and ordered content parts, not AG2 event UUIDs/timestamps.
 This is a reconstruction from current originals, not an archived model payload.
-Source edits or changing trigger-log coverage can change reconstruction. Actual
+Source edits or newly recorded delivery links can change reconstruction. Actual
 provider cache hits also depend on unchanged system prompts, tools and native
 media; this viewer does not download image bytes or reproduce tool traces.
 It makes no paid model calls and does not report provider cache-hit metrics.
@@ -108,7 +124,7 @@ Blue selection marks earlier chronological windows. Added events and message
 labels show their expansion step; **expansion steps** lists each triggering
 request, its answer and how many new messages it contributed. Character counts, image placeholders and JSON
 reflect the selected algorithm. Recursive selection can grow substantially in
-a dense bot conversation; inspect the displayed size before adopting a policy.
+a dense bot conversation; the displayed size includes all restored windows.
 This toggle does not change the running Telegram bot.
 
 Open the image incident directly:

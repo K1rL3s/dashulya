@@ -28,7 +28,7 @@ ai/
   embeddings.py          Embedding provider/model policy
   message_format.py      Per-message author metadata, calendar headings and records
   dialogue.py            Reply context, conversation history, turn locking, and reset
-  addressing.py          Direct-address recognition and classification
+  addressing.py          Direct addressing and semantic thread continuation
   prompts.py             Persona and response instructions
 domain/
   groups.py              Group, GroupRepository, and GroupRegistry
@@ -77,7 +77,7 @@ retain their in-memory stream. History and turn locks stay together in `Dialogue
 The formatter receives `BOT_TIMEZONE`, the actual Telegram bot ID and
 `OWNER_USER_ID`; it owns no chat authority or mutable conversation state.
 The owner ID supplies provenance labels for actual numeric senders, independently
-of authorship bindings. The addressing classifier receives the same owner ID.
+of authorship bindings. Both classifiers receive the same owner ID.
 The provider adapts optional `OWNER_AUTHOR_IDS` into explicit sender-to-user
 authorship bindings for the formatter. These affect presentation only, not
 sender authorization or memory access. No binding is inferred from names.
@@ -85,8 +85,8 @@ Each rendering receives the current request's sender ID as an argument for the
 final `Interlocutor user id` marker. Tools receive the `user_id` supplied by `Dialogue` through an AG2
 `Variable` annotation; this parameter is hidden from the model-facing schema.
 Per-turn identity never mutates the shared formatter.
-The same `BOT_TIMEZONE` setting reaches both agent factories as a system-prompt
-fragment. Context and tool text contain local dates and times without a timezone
+The same `BOT_TIMEZONE` setting reaches all three agent factories as a
+system-prompt fragment. Context and tool text contain local dates and times without a timezone
 declaration; numeric offsets disambiguate repeated local hours.
 Incoming/outgoing capture share conversion in `bot/messages.py`. Group messages
 from all participants, owner-private messages and successful deliveries use
@@ -129,16 +129,17 @@ with `FromDishka` and the AG2 integration's `@inject`. Model choices, timeouts,
 retry policy, agent identities, prompts, and response schemas live in `ai`.
 Providers adapt validated application settings to those inputs, attach DI
 middleware, and supply dependencies. `OPENAI_MODEL` selects the reply model;
-`OPENAI_DECISION_MODEL` selects the addressing model.
+`OPENAI_DECISION_MODEL` selects the model shared by both classifiers.
 The reply prompts use Markdown headings and semantic XML sections for persona,
 reaction initiative, input provenance, reply workflow, delivery rules, shared
-input/citation semantics, historical evidence policy and web policy. Both agents
-receive shared provenance and message-format system-prompt fragments; context and memory
-blocks contain calendar headings and time/JSON headers with author metadata on
-every message, followed by original text. Tool
-docstrings own call parameters, result meanings and recovery contracts; these
-are not repeated in the shared prompts. The addressing classifier has its own
-intent rules alongside those shared fragments. User inputs and tool evidence use
+input/citation semantics, historical evidence policy and web policy. All three
+agents receive shared provenance and message-format system-prompt fragments.
+Context and memory blocks contain calendar headings and time/JSON headers with
+author metadata on every message, followed by original text. Tool docstrings
+own call parameters, result meanings and recovery contracts; these are not
+repeated in the shared prompts. The addressing and thread continuation
+classifiers have distinct intent rules alongside those shared fragments.
+User inputs and tool evidence use
 `external_input` envelopes with literal source text; native assistant records
 remain unwrapped. Source labels describe origin, never extra permissions.
 The reply-agent factory also attaches `ReplyTrace` middleware for correlated
@@ -222,7 +223,7 @@ When `KEENABLE_API_KEY` is configured, `AgentProvider` registers the
 with `MCPServerConfig` to connect to `https://api.keenable.ai/mcp` over Streamable
 HTTP, authenticating with `X-API-Key` and exposing only `search_web_pages` and
 `fetch_page_content`. AG2 discovers and caches the remote tool schemas and owns
-MCP session and HTTP client cleanup; the addressing agent has no web tools.
+MCP session and HTTP client cleanup; neither classifier has web tools.
 Discovery has a 30-second deadline. A discovery failure logs safe diagnostics
 and omits web tools from that reply; a later turn can discover them again.
 Calls explicitly request `output_format=json` instead of the server's default
@@ -295,7 +296,7 @@ explicit retries. Ordinary automatic media loads retain their ten-second limit.
 ## Shared graph and scopes
 
 `main/container.py` builds one graph with `AG2Scope`. Application dependencies
-are cached in `APP`: settings, model configurations, both agents, `Dialogue`,
+are cached in `APP`: settings, model configurations, all three agents, `Dialogue`,
 `GroupAddressing`, `ChatMemoryService`, the database pool, vector cache/client, `GroupStore`,
 `GroupRegistry`, `ReplyDelivery`, the Telegram bot, and the dispatcher. Application resolution
 uses an async lock to keep lazy construction unique across concurrent events.
@@ -311,17 +312,44 @@ startup injection step. Middleware receives its dependencies through
 constructors. Group tracking and live-message capture run before owner access.
 Edited-message updates go directly to capture without dialogue execution.
 
-Both AG2 agents carry `DishkaAsyncMiddleware`. Each `Agent.ask()` opens a
+All three AG2 agents carry `DishkaAsyncMiddleware`. Each `Agent.ask()` opens a
 `SESSION`; injected tools open their own `REQUEST` beneath that session.
 These scopes are separate from the Telegram event. Agents retain the application
 container rather than the event container, so an AG2 turn opens its session
 without inheriting a Telegram request's lifetime. `Agent[ReplyBatch]` and `Agent[bool]`
-distinguish the reply and addressing roles.
+distinguish the reply and addressing roles. The application-scoped
+`GroupAddressing` provider also constructs an `Agent[ContinuationAction]` through
+`create_continuation_agent`, with identity `group_thread_continuation`, its own
+prompt and closed choice schema. It shares the Decisions model configuration and DI
+middleware and belongs to the application-scoped `GroupAddressing`. Each incoming
+candidate selects only one classifier and opens a fresh stream. Continuation
+choices use their own text/silence/reaction/no-answer log reasons. The Telegram
+handler injects `MessageReactions` for direct classifier-selected reactions;
+these do not enter `Dialogue` or start a reply-agent session.
 
 The reply agent always registers `search_memory` and `chat_history` with `@tool`
 and standard `dishka_ag2.inject`. Their `FromDishka[MemoryBackend]` and
 `FromDishka[HistoryReader]` and `FromDishka[MessageFormatter]` parameters stay outside
 the model-facing schema.
+It also registers `youtube_transcript`. Its injected `YouTubeTranscripts` service
+and HTTP client live in the application scope and are closed by `AgentProvider`.
+The service retrieves video metadata through a cancellable, bounded yt-dlp
+subprocess and downloads only the selected JSON3 captions. The child embeds
+yt-dlp's Python interface and emits only video identity and caption metadata,
+retaining one JSON3 URL per language before serialization. The parent's size
+bound applies to this projection, so large multiaudio format lists never cross
+the process interface or enter the cache. Local size limits return
+`source_too_large` separately from provider failures.
+It keeps at most eight
+video metadata records and eight transcripts for 15 minutes. Metadata is shared
+across language selections, including unavailable-language results; default and
+explicit selection of the same caption language share one transcript. The tool
+returns compact `[seconds] text` lines, with up to 60,000 characters per page and
+segment offsets for continuation. It omits per-caption JSON field names and
+durations from model input while preserving every caption and its start time.
+No conversation identity is stored in this cache; these are public web sources,
+wrapped with the existing `web` provenance label. Caption absence, provider
+failures and timeouts return explicit recovery guidance without raw provider text.
 `Dialogue.reply()` passes `MemoryAccess` as the trusted `memory_access` AG2
 dependency using the conversation's numeric chat identity and original request
 cutoff. The session provider resolves it through `Inject`, validates that

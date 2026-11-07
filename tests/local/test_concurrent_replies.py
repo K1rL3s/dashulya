@@ -13,6 +13,7 @@ from aiogram import Bot
 from aiogram.methods import SendMessage, TelegramMethod
 from aiogram.types import Message
 
+from dashulya.ai.dialogue import Dialogue
 from dashulya.bot.middlewares.memory import CaptureSentMessagesMiddleware
 from dashulya.bot.replies import ReplyDelivery
 from dashulya.domain.memory import MemoryMessage, MessageRecorder
@@ -42,12 +43,17 @@ class TestConcurrentReplies:
         self.release_recording = asyncio.Event()
         self.release_recording.set()
         self.tasks: list[asyncio.Task[None]] = []
+        self.slow_requests = 0
+        self.three_slow_started = asyncio.Event()
 
         async def respond(request: httpx2.Request) -> httpx2.Response:
             body = json.loads(request.content)
             label = "Slow" if "Slow request" in str(body["input"][-1]) else "Fast"
             self.inputs[label] = body["input"]
             if label == "Slow":
+                self.slow_requests += 1
+                if self.slow_requests == 3:
+                    self.three_slow_started.set()
                 self.slow_started.set()
                 await self.release_model.wait()
             else:
@@ -126,6 +132,7 @@ class TestConcurrentReplies:
         )
         cleanup.push_async_callback(container.close)
         self.delivery = await container.get(ReplyDelivery)
+        self.dialogue = await container.get(Dialogue)
         cleanup.push_async_callback(self.finish_tasks)
 
     async def finish_tasks(self) -> None:
@@ -154,6 +161,55 @@ class TestConcurrentReplies:
         )
         self.tasks.append(task)
         return task
+
+    async def test_stop_cancels_all_group_topics_and_start_allows_new_turns(self) -> None:
+        self.release_model.clear()
+        ordinary = self.start_reply(1, -123)
+        topic_message = self.incoming(1, -123).model_copy(
+            update={"message_thread_id": 7, "is_topic_message": True}
+        )
+        topic = asyncio.create_task(self.delivery.reply(topic_message))
+        self.tasks.append(topic)
+        other = self.start_reply(1, -456)
+        await asyncio.wait_for(self.three_slow_started.wait(), 2)
+        await self.dialogue.stop(-123)
+        assert ordinary.cancelled()
+        assert topic.cancelled()
+        assert not other.done()
+        late = self.start_reply(2, -123)
+        await asyncio.gather(late, return_exceptions=True)
+        assert late.cancelled()
+        assert not self.fast_started.is_set()
+        self.release_model.set()
+        await other
+        assert [item.chat_id for item in self.sent] == [-456, -456]
+        await self.dialogue.resume(-123)
+        resumed = self.start_reply(2, -123)
+        await asyncio.gather(resumed, return_exceptions=True)
+        assert not resumed.cancelled()
+        assert [item.text for item in self.sent[-2:]] == ["Fast one", "Fast two"]
+
+    async def test_stop_preserves_delivered_original_then_cuts_remaining_batch(
+        self,
+    ) -> None:
+        self.release_recording.clear()
+        running = self.start_reply(1, -123)
+        await asyncio.wait_for(self.recording_started.wait(), 1)
+        stopping = asyncio.create_task(self.dialogue.stop(-123))
+        self.tasks.append(stopping)
+        try:
+            await asyncio.wait({stopping}, timeout=0.05)
+            repeated = asyncio.create_task(self.dialogue.stop(-123))
+            self.tasks.append(repeated)
+            await asyncio.wait({repeated}, timeout=0.05)
+            self.release_recording.set()
+            await asyncio.gather(stopping, repeated)
+            assert running.cancelled()
+            assert [item.text for item in self.sent] == ["Slow one"]
+            assert self.recorded == ["Slow one"]
+        finally:
+            self.release_recording.set()
+            await asyncio.gather(running, stopping, return_exceptions=True)
 
     @pytest.mark.parametrize("chat_id", [-123, 42])
     async def test_group_generation_overlaps_while_private_history_stays_serial(

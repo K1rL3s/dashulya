@@ -336,7 +336,13 @@ class TestToolMessageFormat:
         })
         block = result["message_blocks"][0]
         row = group_rows(block["text"])[0]
-        assert row == [1, 42, "00:01:00", source.text[2:7], 9, "photo"]
+        assert row == [
+            1,
+            42,
+            "00:01:00",
+            '<attachment type="photo" image_id="1"/>\n\n' + source.text[2:7],
+            9,
+        ]
         metadata = block["sources"][source.source_id]
         assert metadata["offset"] == 2
         assert metadata["text_length"] == len(source.text)

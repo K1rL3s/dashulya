@@ -3,6 +3,7 @@
 import json
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from html import escape
 from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -26,6 +27,13 @@ type InputSource = Literal["external_user", "bot", "owner", "web", "memory"]
 def external_input(text: str, source: InputSource) -> str:
     """Label application-owned provenance without changing the source text."""
     return f'<external_input source="{source}">\n{text}\n</external_input>'
+
+
+def attachment_tag(media_type: str, message_id: int) -> str:
+    """Identify a source attachment without implying its bytes are available."""
+    return (
+        f'<attachment type="{escape(media_type, quote=True)}" image_id="{message_id}"/>'
+    )
 
 
 def input_source(
@@ -74,11 +82,11 @@ def _message_metadata(
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "message_id": message.message_id,
-        "user_id": _sender(message),
-        "user": message.author,
     }
     if message.reply_to_id is not None:
         metadata["reply_to"] = message.reply_to_id
+    metadata["user_id"] = _sender(message)
+    metadata["user"] = message.author
     if message.username:
         metadata["username"] = message.username.lstrip("@")
     if message.is_bot is True and (bot_id is None or message.author_id != bot_id):
@@ -88,8 +96,6 @@ def _message_metadata(
     )
     if author_user is not None and author_user != message.author_id:
         metadata["author_user"] = author_user
-    if message.media_type:
-        metadata["attachment"] = message.media_type
     # Tool text has no native assistant-role event to carry authorship.
     if (
         bot_id is not None
@@ -163,11 +169,22 @@ def _format_messages(
             + json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
         )
         assistant = bot_id is not None and message.author_id == bot_id
+        body = message.text
+        if message.media_type:
+            marker = attachment_tag(message.media_type, message.message_id)
+            body = f"{marker}\n\n{body}" if body else marker
+        if message.quoted_text is not None:
+            reference = (
+                f' from_message="{message.reply_to_id}"'
+                if message.reply_to_id is not None
+                else ""
+            )
+            body = f"<quoted_text{reference}>\n{message.quoted_text}\n</quoted_text>\n\n{body}"
         text = (
-            message.text
+            body
             if assistant
             else external_input(
-                message.text,
+                body,
                 input_source(
                     message.author_id,
                     owner_id=owner_id,
@@ -199,6 +216,7 @@ def _original(source: dict[str, Any]) -> OriginalMessage:
         chat_username=source.get("chat_username"),
         topic_id=source.get("topic_id"),
         reply_to_id=source.get("reply_to_message_id", source.get("reply_to_id")),
+        quoted_text=source.get("quoted_text"),
         edited_at=source.get("edited_at"),
         media_type=source.get("media_type"),
         url=source.get("url"),

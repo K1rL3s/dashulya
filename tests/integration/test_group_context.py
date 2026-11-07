@@ -286,6 +286,14 @@ class TestGroupContext:
             if isinstance(part, TextInput)
         ]
         assert "We were discussing cats" in "\n".join(requests)
+        previous_input = [
+            part.content
+            for event in await first_stream.history.get_events()
+            if isinstance(event, ModelRequest)
+            for part in event.parts
+            if isinstance(part, TextInput)
+        ]
+        assert requests[: len(previous_input)] == previous_input
         assert '"user_id":99,"user":"Boris"' in requests[1]
         assert group_records(requests[-1])[-1]["reply_to"] == 3
         earlier_bot = [
@@ -302,8 +310,73 @@ class TestGroupContext:
         assert [m.message_id for m in saved] == [1, 2, 3, 4, 5]
         assert saved[2].reply_to_id == first.message_id
         assert saved[-1].reply_to_id == second.message_id
+        assert saved[2].trigger_message_id == first.message_id
+        assert saved[-1].trigger_message_id == second.message_id
         assert saved[2].author_id == BOT["id"]
         assert (await self.store.coverage())["indexed_count"] == 0
+
+    @pytest.mark.parametrize("mode", ["public", "whisper"])
+    async def test_stop_cancels_running_generation_before_acknowledging(
+        self, mode: str
+    ) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def pending_answer(*args: Any, **kwargs: Any) -> Any:
+            started.set()
+            await release.wait()
+            return SimpleNamespace(
+                content=AsyncMock(return_value=ReplyBatch((Reply("Late answer"),)))
+            )
+
+        self.ask.side_effect = pending_answer
+        self.cleanup.enter_context(
+            patch.object(
+                self.bot,
+                "get_chat_member",
+                AsyncMock(return_value=SimpleNamespace(status="administrator")),
+            )
+        )
+        running = asyncio.create_task(
+            self.feed(
+                "/whisper Question" if mode == "whisper" else "Dashulya",
+                entities=[{"type": "text_mention", "offset": 0, "length": 8, "user": BOT}]
+                if mode == "public"
+                else [],
+            )
+        )
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            await self.feed("/stop")
+            assert running.done(), (
+                "/stop acknowledged while a generation was still running"
+            )
+            assert running.cancelled()
+            assert all(item.text != "Late answer" for item in self.sent)
+        finally:
+            release.set()
+            await asyncio.gather(running, return_exceptions=True)
+
+    async def test_stop_cancels_addressing_before_it_can_launch_generation(self) -> None:
+        classifier = await self.container.get(Agent[bool])
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def pending_decision(*args: Any, **kwargs: Any) -> Any:
+            started.set()
+            await release.wait()
+            return SimpleNamespace(content=AsyncMock(return_value=True))
+
+        with patch.object(classifier, "ask", side_effect=pending_decision):
+            running = asyncio.create_task(self.feed("Дашуля, что думаешь?"))
+            try:
+                await asyncio.wait_for(started.wait(), 1)
+                await self.feed("/stop")
+                assert running.cancelled()
+                self.ask.assert_not_awaited()
+            finally:
+                release.set()
+                await asyncio.gather(running, return_exceptions=True)
 
     async def test_formatted_reply_records_delivered_text_with_actual_id(self) -> None:
         self.ask.return_value = SimpleNamespace(

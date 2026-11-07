@@ -11,6 +11,7 @@ from dashulya.ai.dialogue import Dialogue
 from dashulya.bot.messages import conversation_key, message_text
 from dashulya.bot.replies import ReplyDelivery
 from dashulya.domain.messages import GroupMessage
+from dashulya.domain.reactions import MessageReactions
 from dashulya.observability import exception_fields
 
 logger = logging.getLogger(__name__)
@@ -50,42 +51,48 @@ async def group_chat(
     dialogue: FromDishka[Dialogue],
     addressing: FromDishka[GroupAddressing],
     delivery: FromDishka[ReplyDelivery],
+    reactions: FromDishka[MessageReactions],
 ) -> None:
-    incoming = group_message(message)
-    failure_reason = "context_error"
-    try:
-        recent = await dialogue.recent_context(
-            conversation_key(message),
-            through_message_id=message.message_id,
-        )
-        failure_reason = "classifier_error"
-        decision = await addressing.decide(
-            incoming,
-            recent_conversation=recent,
-        )
-    except Exception as error:
-        logger.warning(
-            "Group addressing decision failed",
+    async with dialogue.turn(conversation_key(message)):
+        incoming = group_message(message)
+        failure_reason = "context_error"
+        try:
+            recent = await dialogue.recent_context(
+                conversation_key(message),
+                through_message_id=message.message_id,
+            )
+            failure_reason = "classifier_error"
+            decision = await addressing.decide(
+                incoming,
+                recent_conversation=recent,
+            )
+        except Exception as error:
+            logger.warning(
+                "Group addressing decision failed",
+                extra={
+                    "chat_id": message.chat.id,
+                    "message_id": message.message_id,
+                    "should_reply": False,
+                    "addressing_reason": failure_reason,
+                    **exception_fields(error),
+                },
+            )
+            return
+        logger.info(
+            "Group addressing decision completed",
             extra={
                 "chat_id": message.chat.id,
                 "message_id": message.message_id,
-                "should_reply": False,
-                "addressing_reason": failure_reason,
-                **exception_fields(error),
+                "should_reply": decision.should_reply,
+                "addressing_reason": decision.reason,
+                "emoji": decision.reaction,
             },
         )
-        return
-    logger.info(
-        "Group addressing decision completed",
-        extra={
-            "chat_id": message.chat.id,
-            "message_id": message.message_id,
-            "should_reply": decision.should_reply,
-            "addressing_reason": decision.reason,
-        },
-    )
-    if decision.should_reply:
-        await delivery.reply(message)
+        if decision.reaction is not None:
+            await reactions.set(message.chat.id, message.message_id, decision.reaction)
+            return
+        if decision.should_reply:
+            await delivery.reply(message)
 
 
 @inject

@@ -4,8 +4,7 @@ import argparse
 import asyncio
 import json
 import os
-from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timedelta
+from dataclasses import asdict, replace
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,7 +19,6 @@ from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from dashulya.ai.dialogue import Dialogue
 from dashulya.ai.message_format import MessageFormatter
-from dashulya.bot.formatting import render_markdown
 from dashulya.database import Database
 from dashulya.domain.memory import MemoryMessage, ReplyContext
 from dashulya.domain.messages import ImageAttachment, ImageFile, ReplyBatch
@@ -28,60 +26,6 @@ from dashulya.memory.store import MessageStore
 
 PAGE_SIZE = 80
 ROOT = Path(__file__).resolve().parent
-
-
-@dataclass(frozen=True)
-class DeliveredTurn:
-    request_id: int
-    started_at: datetime
-    delivered_at: datetime
-
-
-def delivered_turns(paths: list[Path]) -> dict[tuple[int, str], list[DeliveredTurn]]:
-    """Match saved output text to completed public requests, not reply targets."""
-    outputs = {}
-    deliveries = []
-    for path in paths:
-        for line in path.read_text().splitlines():
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            if event.get("is_whisper") or event.get("ephemeral_message_id") is not None:
-                continue
-            key = (event.get("chat_id"), event.get("message_id"))
-            if not all(isinstance(value, int) for value in key) or key[0] >= 0:
-                continue
-            if event.get("message") == "AI model call completed" and event.get(
-                "agent_output"
-            ):
-                try:
-                    output = json.loads(event["agent_output"])
-                except ValueError, TypeError:
-                    continue
-                if isinstance(output, dict) and isinstance(output.get("messages"), list):
-                    outputs[key] = output["messages"]
-            elif event.get("message") == "AI reply delivered" and event.get(
-                "chunk_count", 0
-            ):
-                deliveries.append(event)
-    result = {}
-    for event in deliveries:
-        key = (event["chat_id"], event["message_id"])
-        if key not in outputs:
-            continue
-        delivered_at = datetime.fromisoformat(event["timestamp"])
-        turn = DeliveredTurn(
-            request_id=event["message_id"],
-            started_at=delivered_at - timedelta(milliseconds=event.get("duration_ms", 0)),
-            delivered_at=delivered_at,
-        )
-        for item in outputs[key]:
-            if not isinstance(item, dict) or not isinstance(item.get("text"), str):
-                continue
-            for text, _ in render_markdown(item["text"].strip()):
-                result.setdefault((event["chat_id"], text), []).append(turn)
-    return result
 
 
 def message_json(message: MemoryMessage, bot_id: int | None) -> dict[str, Any]:
@@ -95,6 +39,7 @@ def message_json(message: MemoryMessage, bot_id: int | None) -> dict[str, Any]:
         "is_self": bot_id is not None and message.author_id == bot_id,
         "is_bot": message.is_bot,
         "reply_to_id": message.reply_to_id,
+        "trigger_message_id": message.trigger_message_id,
         "topic_id": message.thread_id,
         "media_type": message.media_type,
         "has_image_reference": message.image_file is not None,
@@ -113,6 +58,8 @@ def saved_message(row: dict[str, Any]) -> MemoryMessage:
         chat_username=row["chat_username"],
         thread_id=row["topic_id"],
         reply_to_id=row["reply_to_id"],
+        quoted_text=row["quoted_text"],
+        trigger_message_id=row["trigger_message_id"],
         media_type=row["media_type"],
         username=row["author_username"],
         is_bot=row["is_bot"],
@@ -124,34 +71,12 @@ class Preview:
     def __init__(self, database: Database, formatter: MessageFormatter) -> None:
         self.database = database
         self.formatter = formatter
-        self.log_directory = Path(os.getenv("PREVIEW_LOG_DIR", ROOT.parent / "var/logs"))
-        self._log_signature = None
-        self._delivered_turns = {}
         # Selection does not execute this agent or require model credentials.
         self.dialogue = Dialogue(
             Agent[ReplyBatch]("preview"),
             history=MessageStore(database),
             formatter=formatter,
         )
-
-    def refresh_delivered_turns(self) -> None:
-        paths = sorted(self.log_directory.glob("dashulya.log*"), reverse=True)
-        signature = [
-            (str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in paths
-        ]
-        if signature != self._log_signature:
-            self._delivered_turns = delivered_turns(paths)
-            self._log_signature = signature
-
-    def trigger_id(self, answer: MemoryMessage) -> int | None:
-        candidates = {
-            turn.request_id
-            for turn in self._delivered_turns.get((answer.chat_id, answer.text), [])
-            if turn.started_at < answer.sent_at + timedelta(seconds=1)
-            and turn.delivered_at >= answer.sent_at
-            and turn.request_id < answer.message_id
-        }
-        return next(iter(candidates)) if len(candidates) == 1 else None
 
     async def get(self, path: str, query: dict[str, list[str]]) -> dict[str, Any]:
         if path == "/api/chats":
@@ -183,7 +108,7 @@ class Preview:
                 int(query["message_id"][0]),
                 limit=int(query.get("limit", ["20"])[0]),
                 parent_hops=int(query.get("parent_hops", ["5"])[0]),
-                algorithm=query.get("algorithm", ["classic"])[0],
+                algorithm=query.get("algorithm", ["recursive"])[0],
             )
         raise LookupError("Page not found.")
 
@@ -234,7 +159,7 @@ class Preview:
         *,
         limit: int = 20,
         parent_hops: int = 5,
-        algorithm: str = "classic",
+        algorithm: str = "recursive",
     ) -> dict[str, Any]:
         if limit < 1 or parent_hops < 0:
             raise ValueError(
@@ -265,134 +190,45 @@ class Preview:
             current=current,
             limit=limit,
             parent_hops=parent_hops,
+            recursive=algorithm == "recursive",
         )
-        recent_ids = {item.message_id for item in selected.messages[-limit:]}
-        selections = {
-            item.message_id: {
-                "selection": "current"
-                if item.message_id == message_id
-                else "recent"
-                if item.message_id in recent_ids
-                else "parent",
-                "selection_depth": 0,
-                "expansion_anchor_id": message_id,
-            }
-            for item in selected.messages
-        }
-        steps = [
-            {
-                "depth": 0,
-                "anchor_id": message_id,
-                "preceding": limit - 1,
-                "window_size": limit,
-                "parent_hops": parent_hops,
-                "added_ids": [item.message_id for item in selected.messages],
-                "window_ids": sorted(recent_ids),
-            }
-        ]
-        unresolved_answer_ids = set()
-        chain = [selected]
-        if algorithm == "recursive" and self.formatter.bot_id is not None:
-            self.refresh_delivered_turns()
-            messages = {item.message_id: item for item in selected.messages}
-            frontier = selected.messages
-            before_id = message_id
-            while True:
-                anchor = None
-                answer = None
-                for item in frontier:
-                    if (
-                        item.author_id != self.formatter.bot_id
-                        or item.message_id >= before_id
-                    ):
-                        continue
-                    request_id = self.trigger_id(item)
-                    if request_id is not None and request_id < before_id:
-                        async with self.database.connection() as connection:
-                            cursor = await connection.execute(
-                                """SELECT * FROM messages WHERE chat_id=%s AND message_id=%s
-                                AND sent_at IS NOT NULL AND (%s::bigint IS NULL OR topic_id=%s)""",
-                                (chat_id, request_id, topic, topic),
-                            )
-                            trigger = await cursor.fetchone()
-                        if trigger is not None:
-                            anchor = saved_message(trigger)
-                            answer = item
-                            break
-                    unresolved_answer_ids.add(item.message_id)
-                if anchor is None:
-                    break
-                assert answer is not None
-                if not anchor.text:
-                    anchor = replace(
-                        anchor,
-                        text="Please respond to this media in the context of our conversation.",
-                    )
-                # Replay exactly the same selector at every triggering request.
-                extension = await self.dialogue.select_context(
-                    (chat_id, topic),
-                    anchor.message_id,
-                    current=anchor,
-                    limit=limit,
-                    parent_hops=parent_hops,
-                )
-                chain.append(extension)
-                window_ids = {item.message_id for item in extension.messages[-limit:]}
-                added = [
-                    item.message_id
-                    for item in extension.messages
-                    if item.message_id not in messages
-                ]
-                depth = len(steps)
-                for item in extension.messages:
-                    selections.setdefault(
-                        item.message_id,
-                        {
-                            "selection": "expanded"
-                            if item.message_id in window_ids
-                            else "parent",
-                            "selection_depth": depth,
-                            "expansion_anchor_id": anchor.message_id,
-                        },
-                    )
-                    messages.setdefault(item.message_id, item)
-                steps.append({
-                    "depth": depth,
-                    "anchor_id": anchor.message_id,
-                    "answer_id": answer.message_id,
-                    "anchor_source": "delivery_log",
-                    "preceding": limit - 1,
-                    "window_size": len(window_ids),
-                    "parent_hops": parent_hops,
-                    "added_ids": added,
-                    "window_ids": sorted(window_ids),
-                })
-                frontier = extension.messages
-                before_id = anchor.message_id
-        # Restore oldest input first, then append unseen originals. Sorting the
-        # union or reformatting old records would invalidate the restored prefix.
-        blocks = []
+        selections = {}
+        steps = []
         seen = set()
-        for block in reversed(chain):
-            fresh = tuple(item for item in block.messages if item.message_id not in seen)
-            fresh_ids = {item.message_id for item in fresh}
-            blocks.append(
-                ReplyContext(
-                    messages=fresh,
-                    truncated_threads=tuple(
-                        item
-                        for item in block.truncated_threads
-                        if item.boundary_id in fresh_ids
-                    ),
+        for depth, window in enumerate(selected.windows):
+            recent_ids = {item.message_id for item in window.messages[-limit:]}
+            added_ids = [
+                item.message_id for item in window.messages if item.message_id not in seen
+            ]
+            for item in window.messages:
+                selections.setdefault(
+                    item.message_id,
+                    {
+                        "selection": "current"
+                        if item.message_id == message_id
+                        else "recent"
+                        if depth == 0 and item.message_id in recent_ids
+                        else "expanded"
+                        if item.message_id in recent_ids
+                        else "parent",
+                        "selection_depth": depth,
+                        "expansion_anchor_id": window.anchor_id,
+                    },
                 )
-            )
-            seen.update(fresh_ids)
-        selected = ReplyContext(
-            messages=tuple(item for block in blocks for item in block.messages),
-            truncated_threads=tuple(
-                item for block in blocks for item in block.truncated_threads
-            ),
-        )
+            steps.append({
+                "depth": depth,
+                "anchor_id": window.anchor_id,
+                "answer_id": window.answer_id,
+                "anchor_source": "database"
+                if window.answer_id is not None
+                else "current_request",
+                "preceding": limit - 1,
+                "window_size": len(recent_ids),
+                "parent_hops": parent_hops,
+                "added_ids": added_ids,
+                "window_ids": sorted(recent_ids),
+            })
+            seen.update(item.message_id for item in window.messages)
         # Empty payloads model placement only, never a successful Telegram download.
         images = tuple(
             ImageAttachment(
@@ -405,17 +241,20 @@ class Preview:
             for item in selected.messages
             if item.image_file is not None
         )
-        events = []
-        prefix_event_count = 0
-        prefix_message_count = 0
-        for index, block in enumerate(blocks):
-            if index == len(blocks) - 1:
-                prefix_event_count = len(events)
-                prefix_message_count = sum(len(item.messages) for item in blocks[:index])
-            chunk = self.dialogue.context_events(block, images=images)
-            # Preserve the first chat header from the restored input. Later
-            # blocks append records with their own date and interlocutor markers.
-            events.extend(chunk if not events else chunk[1:])
+        events = self.dialogue.context_events(selected, images=images)
+        prefix_ids = {
+            item.message_id for window in selected.windows[1:] for item in window.messages
+        }
+        prefix_messages = tuple(
+            item for item in selected.messages if item.message_id in prefix_ids
+        )
+        prefix_context = ReplyContext(
+            messages=prefix_messages, windows=selected.windows[1:]
+        )
+        prefix_event_count = len(
+            self.dialogue.context_events(prefix_context, images=images)
+        )
+        prefix_message_count = len(prefix_messages)
         image_ids = {image.message_id for image in images}
         event_ids: list[int | None] = [None]
         for item in selected.messages:
@@ -458,7 +297,7 @@ class Preview:
                 "algorithm": algorithm,
             },
             "expansion_steps": steps,
-            "unresolved_answer_ids": sorted(unresolved_answer_ids),
+            "unresolved_answer_ids": list(selected.unresolved_answer_ids),
             "prefix": {
                 "request_id": steps[1]["anchor_id"] if len(steps) > 1 else None,
                 "event_count": prefix_event_count,

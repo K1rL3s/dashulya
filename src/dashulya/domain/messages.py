@@ -1,11 +1,23 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import Field
 
 ConversationKey = tuple[int, int | None]
 StickerEmotion = Literal["joy", "love", "sad", "angry", "surprised", "skeptical"]
+
+
+class ContinuationAction(StrEnum):
+    IGNORE = "ignore"
+    TEXT = "text"
+    LIKE = "👍"
+    HANDSHAKE = "🤝"
+    HEART = "❤"
+    LAUGH = "😁"
+    CELEBRATE = "🎉"
+    THANKS = "🙏"
 
 
 @dataclass(frozen=True)
@@ -66,12 +78,18 @@ class AddressingDecision:
     should_reply: bool
     reason: Literal[
         "reply_to_bot",
+        "reply_to_other",
         "explicit_mention",
         "name_not_found",
         "classifier_accepted",
         "classifier_rejected",
         "classifier_no_answer",
+        "continuation_accepted",
+        "continuation_rejected",
+        "continuation_no_answer",
+        "continuation_reaction",
     ]
+    reaction: str | None = None
 
 
 @dataclass(frozen=True)

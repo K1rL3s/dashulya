@@ -27,6 +27,61 @@ class TestGroupContextFormat:
     def render(self, messages: list[MemoryMessage]) -> list[dict[str, str]]:
         return MessageFormatter(bot_id=123).context(messages)
 
+    @pytest.mark.parametrize("retrieved", [False, True])
+    @pytest.mark.parametrize(
+        ("reply_to_id", "quote_open"),
+        [(1, '<quoted_text from_message="1">'), (None, "<quoted_text>")],
+    )
+    def test_quote_identifies_the_selected_fragment_without_replacing_message_text(
+        self, retrieved: bool, reply_to_id: int | None, quote_open: str
+    ) -> None:
+        quoted_text = 'PostgreSQL\n"原文" 😀'
+        message = replace(
+            self.message(2, "Почему именно это?"),
+            reply_to_id=reply_to_id,
+            quoted_text=quoted_text,
+        )
+        formatter = MessageFormatter(bot_id=123)
+        if retrieved:
+            rendered = formatter.result({
+                "messages": [
+                    {
+                        "message_id": 1,
+                        "author": "Alice",
+                        "sent_at": message.sent_at.isoformat(),
+                        "text": "Предлагаю Python и PostgreSQL",
+                    },
+                    {
+                        "message_id": 2,
+                        "author": "Alice",
+                        "sent_at": message.sent_at.isoformat(),
+                        "text": "Почему именно это?",
+                        "reply_to_message_id": reply_to_id,
+                        "quoted_text": quoted_text,
+                    },
+                ]
+            })["message_blocks"][0]["text"]
+            records = group_records(rendered)
+        else:
+            records = [
+                record
+                for item in formatter.context([
+                    self.message(1, "Предлагаю Python и PostgreSQL"),
+                    message,
+                ])
+                for record in group_records(item["text"])
+            ]
+        parent, reply = records
+        assert "quoted_text" not in reply
+        assert reply.get("reply_to") == reply_to_id
+        assert reply["text"] == (
+            quote_open
+            + '\nPostgreSQL\n"原文" 😀\n</quoted_text>\n\n'
+            + "Почему именно это?"
+        )
+        assert "quoted_text" not in parent
+        assert parent["text"] == "Предлагаю Python и PostgreSQL"
+
     @pytest.mark.parametrize(
         ("author_id", "is_bot", "source"),
         [
@@ -238,17 +293,26 @@ class TestGroupContextFormat:
         assert "[id,sender,time,text,reply_to?,attachment?]" not in rendered[0]["text"]
         assert group_rows(rendered[1]["text"]) == [[1, 42, "23:59:00", "Original"]]
         row = group_rows(rendered[-1]["text"])[0]
-        assert row == [3, 42, "00:01:00", body, 2, "document"]
+        assert row == [
+            3,
+            42,
+            "00:01:00",
+            '<attachment type="document" image_id="3"/>\n\n' + body,
+            2,
+        ]
         records = [record for item in rendered for record in group_records(item["text"])]
         assert [record.get("reply_to") for record in records] == [None, 1, 2]
         assert records[1]["user"] == "Dashulya"
+        assert list(records[2])[:4] == ["message_id", "reply_to", "user_id", "user"]
 
-    def test_attachment_without_reply_uses_one_null_and_no_other_optional_placeholders(
-        self,
+    @pytest.mark.parametrize("media_type", ["photo", "animation", "sticker", "document"])
+    def test_attachment_type_and_image_id_are_in_body_not_metadata(
+        self, media_type: str
     ) -> None:
-        rendered = self.render([replace(self.message(1, ""), media_type="sticker")])
+        rendered = self.render([replace(self.message(1, ""), media_type=media_type)])
+        assert "attachment" not in group_records(rendered[1]["text"])[0]
         assert group_rows(rendered[1]["text"]) == [
-            [1, 42, "23:59:00", "", None, "sticker"]
+            [1, 42, "23:59:00", f'<attachment type="{media_type}" image_id="1"/>']
         ]
 
     def test_unknown_people_are_not_merged_or_given_invented_handles_or_bot_flags(
@@ -405,7 +469,7 @@ class TestGroupContextFormat:
         )
         assert (
             rendered[2]["text"]
-            == 'Interlocutor user id: 42\n23:59:00 {"message_id":2,"user_id":42,"user":"Alice","reply_to":1}\n'
+            == 'Interlocutor user id: 42\n23:59:00 {"message_id":2,"reply_to":1,"user_id":42,"user":"Alice"}\n'
             '<external_input source="external_user">\n' + body + "\n</external_input>"
         )
         assert input_payload(rendered[2]["text"]) == body

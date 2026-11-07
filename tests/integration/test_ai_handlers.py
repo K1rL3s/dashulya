@@ -8,14 +8,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from ag2 import Agent
+from ag2.testing import TestConfig, TrackingConfig
 from aiogram import Bot, Dispatcher
-from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
+from aiogram.exceptions import (
+    TelegramForbiddenError,
+    TelegramNetworkError,
+)
 from aiogram.methods import (
     GetChatAdministrators,
     GetStickerSet,
     SendMessage,
     SendRichMessage,
     SendSticker,
+    SetMessageReaction,
     TelegramMethod,
 )
 from aiogram.types import (
@@ -23,6 +28,7 @@ from aiogram.types import (
     ChatMemberOwner,
     File,
     Message,
+    ReactionTypeEmoji,
     StickerSet,
     Update,
     User,
@@ -32,6 +38,7 @@ from dashulya.database import Database
 from dashulya.domain.groups import Group
 from dashulya.domain.memory import MessageRecorder
 from dashulya.domain.messages import (
+    ContinuationAction,
     ImageFile,
     ImageOmission,
     Reply,
@@ -48,9 +55,11 @@ from tests.support import (
     BotOverride,
     DecisionOverride,
     DialogueOverride,
+    ModelOverrides,
     RecorderOverride,
     dashulya_sticker_set,
     input_payload,
+    reply_json,
 )
 
 BOT_TOKEN = "123456789:TEST_ONLY_NOT_A_REAL_BOT_TOKEN"
@@ -99,7 +108,16 @@ class _AIHandlerFixture:
     active_group = True
 
     @pytest.fixture
-    async def _setup(self, database: Database, cleanup: AsyncExitStack) -> None:
+    def continuation_action(self) -> ContinuationAction:
+        return ContinuationAction.IGNORE
+
+    @pytest.fixture
+    async def _setup(
+        self,
+        database: Database,
+        cleanup: AsyncExitStack,
+        continuation_action: ContinuationAction,
+    ) -> None:
         self.database = database
         self.cleanup = cleanup
         self.directory = TemporaryDirectory()
@@ -122,11 +140,15 @@ class _AIHandlerFixture:
         request_patch.start()
         self.cleanup.callback(request_patch.stop)
         self.dialogue = AsyncMock()
+        self.dialogue.turn = MagicMock(return_value=nullcontext())
         self.dialogue.delivery = MagicMock(return_value=nullcontext())
         self.dialogue.reply.return_value = ReplyBatch((Reply("Hello <Anna> 💋"),))
         self.dialogue.recent_context.return_value = []
         self.decision_agent = AsyncMock(spec=Agent)
         self.decision_agent.ask.return_value.content = AsyncMock(return_value=False)
+        self.continuation_config = TrackingConfig(
+            TestConfig(json.dumps({"data": continuation_action}))
+        )
         self.recorder = AsyncMock(spec=MessageRecorder)
         self.container = create_container(
             Settings(
@@ -138,6 +160,10 @@ class _AIHandlerFixture:
             RecorderOverride(self.recorder),
             DialogueOverride(self.dialogue),
             DecisionOverride(self.decision_agent),
+            ModelOverrides(
+                reply=TestConfig(reply_json("Unused reply model")),
+                decision=self.continuation_config,
+            ),
         )
         self.cleanup.push_async_callback(self.container.close)
         self.groups = await self.container.get(GroupStore)
@@ -232,6 +258,63 @@ class _AIHandlerFixture:
 
 
 class TestAIHandler(_AIHandlerFixture):
+    @pytest.mark.parametrize("continuation_action", list(ContinuationAction))
+    async def test_continuation_actions_deliver_without_an_unnecessary_reply_turn(
+        self, continuation_action: ContinuationAction
+    ) -> None:
+        self.dialogue.recent_context.return_value = [
+            {"role": "assistant", "text": "Earlier answer"}
+        ]
+
+        await self.message("Понятно, спасибо", chat=GROUP)
+
+        reactions = [
+            call.args[1]
+            for call in self.requests.call_args_list
+            if isinstance(call.args[1], SetMessageReaction)
+        ]
+        if continuation_action is ContinuationAction.TEXT:
+            self.dialogue.reply.assert_awaited_once()
+            assert len(self.replies()) == 1
+            assert reactions == []
+        else:
+            self.dialogue.reply.assert_not_awaited()
+            assert self.replies() == []
+            if continuation_action is ContinuationAction.IGNORE:
+                assert self.requests.await_count == 0
+            else:
+                assert len(reactions) == 1
+                reaction = reactions[0]
+                assert (reaction.chat_id, reaction.message_id) == (GROUP["id"], 1)
+                assert reaction.reaction is not None
+                assert isinstance(reaction.reaction[0], ReactionTypeEmoji)
+                assert reaction.reaction[0].emoji == continuation_action.value
+                assert self.requests.await_count == 1
+        self.decision_agent.ask.assert_not_awaited()
+        assert len(self.continuation_config.calls) == 1
+        self.get_file.assert_not_awaited()
+
+    @pytest.mark.parametrize("continuation_action", [ContinuationAction.LIKE])
+    @pytest.mark.parametrize("network_error", [False, True])
+    async def test_continuation_reaction_failure_does_not_fall_back_to_text(
+        self, continuation_action: ContinuationAction, network_error: bool
+    ) -> None:
+        self.dialogue.recent_context.return_value = [
+            {"role": "assistant", "text": "Earlier answer"}
+        ]
+        method = SetMessageReaction(chat_id=GROUP["id"], message_id=1)
+        self.requests.side_effect = (
+            TelegramNetworkError(method=method, message="Delivery failed")
+            if network_error
+            else TelegramForbiddenError(method=method, message="Delivery failed")
+        )
+
+        await self.message("Спасибо", chat=GROUP)
+
+        self.dialogue.reply.assert_not_awaited()
+        assert self.requests.await_count == 1
+        assert self.replies() == []
+
     @pytest.mark.parametrize("group", [False, True])
     async def test_followup_text_and_sticker_have_no_reply_and_preserve_topic(
         self, group: bool

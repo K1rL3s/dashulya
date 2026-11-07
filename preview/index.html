@@ -129,7 +129,7 @@
   </main>
   <script>
     const $ = id => document.getElementById(id);
-    const state = { messages:[], chat:null, topic:"", context:null, current:null, timezone:"Europe/Moscow", view:"events", epoch:0, contextRequest:null, loading:false, limit:20, parentHops:5, algorithm:"classic" };
+    const state = { messages:[], chat:null, topic:"", context:null, current:null, timezone:"Europe/Moscow", view:"events", epoch:0, contextRequest:null, loading:false, limit:20, parentHops:5, algorithm:"recursive" };
     let parameterTimer;
     const labels = { current:"Current request", recent:"Recent window", parent:"Reply parent", expanded:"Earlier window" };
     function element(tag, className, text) { const node=document.createElement(tag); if(className) node.className=className; if(text!==undefined) node.textContent=text; return node; }
@@ -215,7 +215,7 @@
           prefix.append(document.createTextNode(`Restored prefix: ${result.prefix.event_count} events · ${result.prefix.message_count} messages · ${result.prefix.text_characters.toLocaleString("en-US")} chars from request `),previous,element("div","", "Previous date, interlocutor and reply-cut markers are preserved. New records append after this prefix; older parents can appear in the appended block."));
           fragment.append(prefix);
         }
-        if(result.unresolved_answer_ids.length) fragment.append(element("div","cut-note",`${result.unresolved_answer_ids.length} earlier bot message(s) skipped: their triggering requests could not be uniquely verified from delivery logs. Reply targets are not used as substitutes.`));
+        if(result.unresolved_answer_ids.length) fragment.append(element("div","cut-note",`${result.unresolved_answer_ids.length} earlier bot message(s) skipped: their triggering requests have no usable database link in this chat/topic. Reply targets are not used as substitutes.`));
       }
       if(result.truncated_threads.length) fragment.append(element("div","cut-note",`${result.truncated_threads.length} reply chain(s) extend past the ${result.parameters.parent_hops}-hop limit. Navigation metadata appears in the boundary messages.`));
       if(result.image_count) fragment.append(element("div","cut-note",`${result.image_count} ImageInput placeholder(s) follow their source messages. Placement uses the bot's event builder; image bytes are not downloaded. Runtime availability, decoding and the byte budget can produce omission notes instead.`));
@@ -273,7 +273,7 @@
         state.chat=query.has("chat_id")?data.chats.find(chat=>String(chat.chat_id)===query.get("chat_id")):(data.chats.find(chat=>String(chat.chat_id)==="-1003576522523")||data.chats.reduce((largest,chat)=>chat.message_count>largest.message_count?chat:largest));
         if(!state.chat) throw new Error("This group chat is not saved in PostgreSQL.");
         state.topic=query.get("topic_id")||"";
-        setAlgorithm(query.get("algorithm")==="recursive"?"recursive":"classic");
+        setAlgorithm(query.get("algorithm")==="classic"?"classic":"recursive");
         $("chat-title").textContent=state.chat.title||"Unnamed group"; $("chat-title").title=`${state.chat.message_count.toLocaleString()} saved messages · ${state.timezone}`;
         await loadMessages();
         if(query.has("message_id")) await revealMessage(Number(query.get("message_id")),true);

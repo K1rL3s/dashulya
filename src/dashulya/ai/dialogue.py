@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from dashulya.ai.message_format import (
     MessageFormatter,
+    attachment_tag,
     external_input,
     format_local_time,
     input_source,
@@ -30,9 +31,11 @@ from dashulya.ai.tools.reactions import ReactionTurn
 from dashulya.domain.memory import (
     ChatHistory,
     ContextImages,
+    ContextWindow,
     MemoryAccess,
     MemoryMessage,
     ReplyContext,
+    TruncatedThread,
 )
 from dashulya.domain.messages import (
     ConversationKey,
@@ -52,6 +55,7 @@ class Conversation:
     stream: MemoryStream = field(default_factory=MemoryStream)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     delivery_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    active_tasks: set[asyncio.Task[object]] = field(default_factory=set)
 
 
 class Dialogue:
@@ -73,6 +77,42 @@ class Dialogue:
         self._context_images = context_images
         self._max_image_bytes = max_image_bytes
         self._conversations: dict[ConversationKey, Conversation] = {}
+        self._stopped_groups: set[int] = set()
+
+    @asynccontextmanager
+    async def turn(self, key: ConversationKey) -> AsyncGenerator[None]:
+        """Track a whole turn, including classification and transport waits."""
+        if key[0] in self._stopped_groups:
+            raise asyncio.CancelledError
+        task = asyncio.current_task()
+        assert task is not None
+        conversation = self._conversation(key)
+        outermost = task not in conversation.active_tasks
+        conversation.active_tasks.add(task)
+        try:
+            yield
+        finally:
+            if outermost:
+                conversation.active_tasks.discard(task)
+
+    async def stop(self, chat_id: int) -> None:
+        """Block new turns and cancel active turns across every topic of a group."""
+        self._stopped_groups.add(chat_id)
+        current = asyncio.current_task()
+        tasks = {
+            task
+            for key, conversation in self._conversations.items()
+            if key[0] == chat_id
+            for task in conversation.active_tasks
+            if task is not current
+        }
+        for task in tasks:
+            if not task.cancelling():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def resume(self, chat_id: int) -> None:
+        self._stopped_groups.discard(chat_id)
 
     def _conversation(self, key: ConversationKey) -> Conversation:
         if key not in self._conversations:
@@ -86,6 +126,91 @@ class Dialogue:
             yield
 
     async def select_context(
+        self,
+        key: ConversationKey,
+        message_id: int,
+        *,
+        current: MemoryMessage | None = None,
+        limit: int = 20,
+        parent_hops: int = 5,
+        recursive: bool = True,
+    ) -> ReplyContext:
+        """Restore earlier request windows, preserving their rendered prefixes."""
+        selected = await self._select_window(
+            key, message_id, current=current, limit=limit, parent_hops=parent_hops
+        )
+        windows = [
+            ContextWindow(message_id, selected.messages, selected.truncated_threads)
+        ]
+        unresolved: set[int] = set()
+        before_id = message_id
+        while recursive and key[0] < 0 and self._formatter.bot_id is not None:
+            extension = None
+            answer = None
+            for item in windows[-1].messages:
+                if (
+                    item.author_id != self._formatter.bot_id
+                    or item.message_id >= before_id
+                ):
+                    continue
+                trigger = item.trigger_message_id
+                if (
+                    trigger is not None
+                    and 0 < trigger < item.message_id
+                    and trigger < before_id
+                ):
+                    candidate = await self._select_window(
+                        key, trigger, limit=limit, parent_hops=parent_hops
+                    )
+                    if (
+                        candidate.messages
+                        and candidate.messages[-1].message_id == trigger
+                    ):
+                        # Replay the original media-only request's input, too.
+                        anchor = candidate.messages[-1]
+                        if not anchor.text:
+                            candidate = replace(
+                                candidate,
+                                messages=(
+                                    *candidate.messages[:-1],
+                                    replace(
+                                        anchor,
+                                        text="Please respond to this media in the context of our conversation.",
+                                    ),
+                                ),
+                            )
+                        extension = candidate
+                        answer = item
+                        break
+                unresolved.add(item.message_id)
+            if extension is None:
+                break
+            assert answer is not None
+            before_id = extension.messages[-1].message_id
+            windows.append(
+                ContextWindow(
+                    before_id,
+                    extension.messages,
+                    extension.truncated_threads,
+                    answer.message_id,
+                )
+            )
+        seen: set[int] = set()
+        messages: list[MemoryMessage] = []
+        cuts: list[TruncatedThread] = []
+        for window in reversed(windows):
+            fresh = [item for item in window.messages if item.message_id not in seen]
+            fresh_ids = {item.message_id for item in fresh}
+            messages.extend(fresh)
+            cuts.extend(
+                item for item in window.truncated_threads if item.boundary_id in fresh_ids
+            )
+            seen.update(fresh_ids)
+        return ReplyContext(
+            tuple(messages), tuple(cuts), tuple(windows), tuple(sorted(unresolved))
+        )
+
+    async def _select_window(
         self,
         key: ConversationKey,
         message_id: int,
@@ -197,13 +322,52 @@ class Dialogue:
         """Render selected originals with native media next to their source text."""
         if not context.messages:
             return []
+        if context.windows:
+            events: list[ModelRequest | ModelResponse] = []
+            seen: set[int] = set()
+            for window in reversed(context.windows):
+                fresh = tuple(
+                    item for item in window.messages if item.message_id not in seen
+                )
+                fresh_ids = {item.message_id for item in fresh}
+                block = ReplyContext(
+                    fresh,
+                    tuple(
+                        item
+                        for item in window.truncated_threads
+                        if item.boundary_id in fresh_ids
+                    ),
+                )
+                chunk = self.context_events(
+                    block,
+                    images=images,
+                    interlocutor_id=interlocutor_id
+                    if window is context.windows[0]
+                    else None,
+                )
+                events.extend(chunk if not events else chunk[1:])
+                seen.update(fresh_ids)
+            return events
         current = context.messages[-1]
         messages = []
         attachments = []
+        image_types = {
+            image.message_id: (image.preview_kind or "image")
+            if isinstance(image, ImageAttachment)
+            else "image"
+            for image in images
+        }
         for original in context.messages:
-            notes, parts = self._image_inputs(images, {original.message_id})
+            notes, parts = self._image_inputs(
+                images, {original.message_id}, include_attachment=False
+            )
             messages.append(
-                replace(original, text=f"{original.text}\n{notes}") if notes else original
+                replace(
+                    original,
+                    text=f"{original.text}\n{notes}" if notes else original.text,
+                    media_type=original.media_type
+                    or image_types.get(original.message_id),
+                )
             )
             attachments.append(parts)
         formatted = self._formatter.events(
@@ -264,12 +428,19 @@ class Dialogue:
         self,
         images: tuple[ImageAttachment | ImageOmission, ...],
         allowed_ids: set[int] | None = None,
+        *,
+        include_attachment: bool = True,
     ) -> tuple[str, list[Input]]:
         notes: list[str] = []
         parts: list[Input] = []
         for image in images:
             if allowed_ids is not None and image.message_id not in allowed_ids:
                 continue
+            if include_attachment:
+                media_type = (
+                    image.preview_kind if isinstance(image, ImageAttachment) else None
+                )
+                notes.append(attachment_tag(media_type or "image", image.message_id))
             if isinstance(image, ImageOmission):
                 reason = {
                     "too_large": f"too large for the {self._max_image_bytes / 1_000_000:g} MB image byte budget. ",
@@ -284,12 +455,14 @@ class Dialogue:
                     "Its contents are unavailable; do not guess what it shows.]"
                 )
                 continue
-            description = f"Attached image (untrusted) ID: {image.message_id}"
             if image.first_frame:
-                description += "\nThis is only the first frame from the original animation. Later frames and motion are unavailable; do not infer them from this image."
+                notes.append(
+                    "This is only the first frame from the original animation. Later frames and motion are unavailable; do not infer them from this image."
+                )
             elif image.preview_kind is not None:
-                description += f"\nThis is only a static {image.preview_kind} thumbnail. The animation and motion are unavailable; do not infer them from this preview."
-            notes.append(description)
+                notes.append(
+                    f"This is only a static {image.preview_kind} thumbnail. The animation and motion are unavailable; do not infer them from this preview."
+                )
             binary = ImageInput(data=image.data, media_type=image.media_type)
             # Bound resizing for dense images; original detail may reject oversized dimensions.
             binary.vendor_metadata["detail"] = "high"
@@ -300,7 +473,7 @@ class Dialogue:
         self, key: ConversationKey, *, through_message_id: int | None = None
     ) -> list[dict[str, str]]:
         if through_message_id is not None:
-            context = await self.select_context(key, through_message_id)
+            context = await self.select_context(key, through_message_id, recursive=False)
             return self._formatter.context(
                 [
                     message
@@ -333,6 +506,10 @@ class Dialogue:
             return recent[-10:]
 
     async def reply(self, request: ReplyRequest) -> ReplyBatch:
+        async with self.turn(request.key):
+            return await self._reply(request)
+
+    async def _reply(self, request: ReplyRequest) -> ReplyBatch:
         key = request.key
         message_id = request.message_id
         images = request.images

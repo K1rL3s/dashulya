@@ -11,6 +11,7 @@ from dashulya.ai.agents.tracing import ReplyTrace, log_builtin_tool
 from dashulya.ai.prompts import (
     CHARACTER_PROMPT,
     GROUP_ADDRESSING_PROMPT,
+    GROUP_THREAD_CONTINUATION_PROMPT,
     INPUT_FORMAT_PROMPT,
     INPUT_TRUST_PROMPT,
     MEMORY_TOOLS_PROMPT,
@@ -19,8 +20,9 @@ from dashulya.ai.prompts import (
     RESPONSE_RULES_PROMPT,
     TIMEZONE_PROMPT,
     WEB_SEARCH_PROMPT,
+    YOUTUBE_TRANSCRIPT_PROMPT,
 )
-from dashulya.domain.messages import ReplyBatch
+from dashulya.domain.messages import ContinuationAction, ReplyBatch
 
 
 def create_decision_agent(
@@ -39,7 +41,30 @@ def create_decision_agent(
         ],
         response_schema=ResponseSchema(
             bool,
-            description="Does the current message call for a reply from Dashulya?",
+            description="Is Dashulya an addressee of the current message?",
+        ),
+        config=config,
+        middleware=middleware,
+    )
+
+
+def create_continuation_agent(
+    config: ModelConfig,
+    *,
+    timezone: str = "Europe/Moscow",
+    middleware: Iterable[MiddlewareFactory] = (),
+) -> Agent[ContinuationAction]:
+    return Agent(
+        "group_thread_continuation",
+        prompt=[
+            INPUT_TRUST_PROMPT,
+            GROUP_THREAD_CONTINUATION_PROMPT,
+            TIMEZONE_PROMPT.format(timezone=ZoneInfo(timezone).key),
+            MESSAGE_FORMAT_PROMPT,
+        ],
+        response_schema=ResponseSchema(
+            ContinuationAction,
+            description="Choose silence, a necessary text answer, or one allowed reaction for the current continuation.",
         ),
         config=config,
         middleware=middleware,
@@ -64,6 +89,7 @@ def create_reply_agent(
             INPUT_FORMAT_PROMPT,
             MEMORY_TOOLS_PROMPT,
             WEB_SEARCH_PROMPT,
+            YOUTUBE_TRANSCRIPT_PROMPT,
             RESPONSE_RULES_PROMPT,
         ],
         tools=tools,

@@ -36,6 +36,7 @@ def original(row: dict[str, Any]) -> OriginalMessage:
         chat_username=row["chat_username"],
         topic_id=row["topic_id"],
         reply_to_id=row["reply_to_id"],
+        quoted_text=row["quoted_text"],
         edited_at=edited.isoformat() if edited is not None else None,
         media_type=row["media_type"],
         url=row["url"],
@@ -66,6 +67,7 @@ class MessageStore:
         update_id: int = 0,
         version_time: float | None = None,
         if_missing: bool = False,
+        trigger_message_id: int | None = None,
     ) -> None:
         edited = datetime.fromisoformat(value.edited_at) if value.edited_at else None
         instant = edited or value.sent_at
@@ -86,6 +88,7 @@ class MessageStore:
             "chat_username": value.chat_username,
             "topic_id": value.topic_id,
             "reply_to_id": value.reply_to_id,
+            "quoted_text": value.quoted_text,
             "edited_at": edited,
             "media_type": value.media_type,
             "image_file": Jsonb({
@@ -117,17 +120,18 @@ class MessageStore:
                 ON CONFLICT(collection) DO UPDATE SET title=excluded.title,username=excluded.username""",
                 parameters,
             )
+
             await connection.execute(
                 """INSERT INTO messages AS old (
                     collection,message_id,chat_id,body,sent_at,author_id,author,
                     author_username,is_bot,chat_title,chat_username,topic_id,
-                    reply_to_id,edited_at,media_type,url,provenance,archive_key,
+                    reply_to_id,quoted_text,edited_at,media_type,url,provenance,archive_key,
                     update_id,version_time,body_folded,author_folded,username_folded,image_file
                 ) VALUES (
                     %(collection)s,%(message_id)s,%(chat_id)s,%(body)s,%(sent_at)s,
                     %(author_id)s,%(author)s,%(author_username)s,%(is_bot)s,
                     %(chat_title)s,%(chat_username)s,%(topic_id)s,%(reply_to_id)s,
-                    %(edited_at)s,%(media_type)s,%(url)s,%(provenance)s,
+                    %(quoted_text)s,%(edited_at)s,%(media_type)s,%(url)s,%(provenance)s,
                     %(archive_key)s,%(update_id)s,%(version_time)s,
                     %(body_folded)s,%(author_folded)s,%(username_folded)s,%(image_file)s
                 ) ON CONFLICT(collection,message_id) DO UPDATE SET
@@ -136,6 +140,7 @@ class MessageStore:
                     is_bot=excluded.is_bot,chat_title=excluded.chat_title,
                     chat_username=excluded.chat_username,topic_id=excluded.topic_id,
                     reply_to_id=excluded.reply_to_id,edited_at=excluded.edited_at,
+                    quoted_text=excluded.quoted_text,
                     media_type=excluded.media_type,url=excluded.url,
                     image_file=excluded.image_file,
                     provenance=excluded.provenance,archive_key=excluded.archive_key,
@@ -145,11 +150,11 @@ class MessageStore:
                     revision=old.revision+CASE WHEN
                         (old.body,old.sent_at,old.author_id,old.author,old.author_username,
                          old.is_bot,old.topic_id,old.reply_to_id,old.edited_at,old.media_type,
-                         old.provenance,old.archive_key) IS DISTINCT FROM
+                         old.provenance,old.archive_key,old.quoted_text) IS DISTINCT FROM
                         (excluded.body,excluded.sent_at,excluded.author_id,excluded.author,
                          excluded.author_username,excluded.is_bot,excluded.topic_id,
                          excluded.reply_to_id,excluded.edited_at,excluded.media_type,
-                         excluded.provenance,excluded.archive_key)
+                         excluded.provenance,excluded.archive_key,excluded.quoted_text)
                         THEN 1 ELSE 0 END,
                     attempts=0,retry_at=0
                 WHERE NOT %(if_missing)s
@@ -158,6 +163,14 @@ class MessageStore:
                 """,
                 parameters,
             )
+            # Delivery provenance is independent of source versions and snapshots.
+            # A Telegram update may have recorded a newer original before send returns.
+            if trigger_message_id is not None:
+                await connection.execute(
+                    """UPDATE messages SET trigger_message_id=%s
+                    WHERE collection=%s AND message_id=%s AND trigger_message_id IS NULL""",
+                    (trigger_message_id, value.collection, value.message_id),
+                )
 
     async def record(self, message: MemoryMessage, *, if_missing: bool = False) -> None:
         if message.sent_at.utcoffset() is None or (
@@ -178,6 +191,7 @@ class MessageStore:
                 chat_username=message.chat_username,
                 topic_id=message.thread_id,
                 reply_to_id=message.reply_to_id,
+                quoted_text=message.quoted_text,
                 edited_at=message.edited_at.astimezone(UTC).isoformat()
                 if message.edited_at
                 else None,
@@ -192,6 +206,7 @@ class MessageStore:
             ),
             update_id=message.update_id,
             if_missing=if_missing,
+            trigger_message_id=message.trigger_message_id,
         )
 
     async def originals(
@@ -283,6 +298,8 @@ class MessageStore:
                     chat_username=row["chat_username"],
                     thread_id=row["topic_id"],
                     reply_to_id=row["reply_to_id"],
+                    quoted_text=row["quoted_text"],
+                    trigger_message_id=row["trigger_message_id"],
                     edited_at=row["edited_at"],
                     media_type=row["media_type"],
                     update_id=row["update_id"],

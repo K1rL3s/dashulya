@@ -42,7 +42,8 @@ edited at or after a request's cutoff is excluded, rather than presented as if
 its current text existed earlier.
 
 Canonical originals preserve chat, sender, send time, reply relationship,
-attachment type, bot/username metadata when known, provenance and Telegram URL.
+selected reply quote (`quoted_text`), attachment type, bot/username metadata when
+known, provenance and Telegram URL.
 Unknown sender flags remain unknown. Private originals have no invented Telegram
 message URL. Bot replies can help interpret context; they are not independent
 factual corroboration. Source text is untrusted evidence, never instructions.
@@ -262,6 +263,17 @@ attachment contents. Incoming reply
 snapshots can fill missing parents without overwriting recorded originals or
 their deeper reply relationships.
 
+Capture preserves Telegram `quote.text` as nullable `quoted_text` on the replying
+message, including its original language and newlines. Ordinary replies and older
+records without a captured quote retain null; no fragment is inferred from the
+parent's text. Edits replace or remove the quote with the received value.
+Quote position and formatting entities are not retained. Reply context and
+retrieved messages render the quote before the reply body inside `external_input`:
+`<quoted_text from_message="123">`, its literal text, and `</quoted_text>`, followed
+by a blank line. The quote is omitted from JSON headers. Omit `from_message` when
+the parent ID is unknown. `chat_history` still exposes `quoted_text` as a nullable
+SQL column. A quote remains untrusted source text.
+
 Poll messages retain a textual projection containing only their question and
 numbered answer options, preserving the original language and complete text.
 The same projection supplies current model input, addressing, reply context and
@@ -289,10 +301,13 @@ are capped at 20,000,000 during streaming. An image known to exceed the remainin
 not downloaded and instead produces an explicit oversized-image note for the
 reply agent. An overflow discovered while streaming stops the download and
 produces the same note.
-Native AG2 image inputs are labelled by appending
-`Attached image (untrusted) ID: <message ID>` to the original text's `TextInput`,
-followed directly by the image part without a separate label input. Preview
-qualifiers and omission notes also extend that original text. In group reply
+Source attachments are identified inside the message body by
+`<attachment type="photo" image_id="123"/>`, after any quote and before the
+caption. The type preserves the saved media kind (or `image` when only an image
+input is known), and the ID identifies the source message. There is no duplicate
+attachment metadata or separate `Attached image` label. The tag alone does not
+imply that bytes were supplied. Native AG2 image parts follow the original
+`TextInput`; preview qualifiers and omission notes extend that text. In group reply
 context, media stays within its source message's user event, preserving
 chronological placement. This bot's originals
 retain their assistant role; AG2 assistant responses accept text only, so their
@@ -359,6 +374,12 @@ questions and captions take priority.
 Successfully delivered group and owner-private responses, including command
 responses, are recorded with Telegram-assigned IDs, send times and reply
 relationships. Split responses produce one original per delivered chunk.
+Generated public group replies also retain an immutable `trigger_message_id`,
+independent of the chosen reply target. Sent-message capture writes it atomically
+with each successful chunk or sticker. Task-local provenance is cleared on
+success, failure or cancellation and cannot cross chat/topic boundaries. Edits,
+stale updates and imports preserve it without changing the source's indexing
+revision. Command, error, private and whisper responses do not receive this link.
 Collapsed ordinary responses retain their full rendered text; the client-side
 preview does not truncate stored originals. Captured Rich responses without
 ordinary text retain generated HTML's text or source Markdown.
@@ -372,7 +393,18 @@ it does not erase persistent originals or their vectors.
 
 The same canonical table, including imported originals, supplies immediate group
 reply context: the latest 20 messages in the whole ordinary group through the
-request, plus their ancestors up to five hops. A real forum topic narrows both
+request, plus their ancestors up to five hops. This is the base window. Group
+generation recursively restores the same window at earlier reply triggers
+recorded on this bot's delivered originals, starting with the earliest usable
+answer in each window. Each trigger moves backwards and must exist in the same
+chat/topic. Older answers without recorded provenance cannot expand context;
+`reply_to_id` and delivery logs are not substitutes. Render restored windows
+oldest first and append only unseen originals from newer windows, retaining
+existing date/interlocutor markers and navigation metadata. Do not globally
+sort the union or rewrite the restored prefix. Captionless anchors use the
+same default media question as generation. Name/continuation classification
+keeps the bounded base window. The preview shares both production selection
+and rendering and defaults to recursion. A real forum topic narrows both
 seeds and parents to that topic. Ordinary reply threads never split this window;
 old rows with raw thread IDs remain eligible without rewriting originals.
 The Telegram adapter shares one `conversation_key()` between capture, addressing
@@ -405,16 +437,17 @@ Names, matching usernames and channel ownership alone cannot assign this link.
 The setting asserts authorship explicitly, grants no access, and changes neither
 stored originals nor author filters. It is empty by default.
 The shared formatter receives this ID per call; it retains no current-user state.
-Immediate group context, addressing context and both tools use
+Immediate group context, both classifiers and both tools use
 the final marker. Private input marks its sender next to their Telegram user ID.
 Instructions tell the assistant to address this participant in the second person,
 while preserving quotations and explicit requests to reply to someone else.
 Local day headings occur in the first message of each day. The configured IANA timezone
-belongs to both agents' system prompts; user context and tool evidence omit its
+belongs to all agents' system prompts; user context and tool evidence omit its
 declaration. A repeated local hour carries its numeric UTC offset in the time
 field, including when only one occurrence is selected. A shared
 system-prompt fragment defines the per-message author fields and optional
-`attachment` and `reply_to` (the original parent message ID when present).
+`reply_to` (the original parent message ID when present). Attachments appear as
+`<attachment type="photo" image_id="123"/>` inside the source body.
 These headers precede the sender's
 `external_input` envelope around the exact original text. The shared chat header
 also has no envelope; observed names, handles and titles remain untrusted evidence.

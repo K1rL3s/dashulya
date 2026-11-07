@@ -25,6 +25,9 @@ personality follows the Rebel archetype: independent, defiant and quick-witted,
 with sharp banter, irreverence and self-irony grounded in the conversation.
 She pushes back against pressure and empty authority, keeps casual replies short
 and gives direct, useful answers with the same sharp voice.
+She checks factual corrections before conceding, distinguishes them from
+clarifications of the person's intent, keeps follow-ups anchored to their subject,
+and answers new points without restarting explanations already given.
 
 The name grew out of a meme in the [FastNews chat](https://t.me/fastnewsdev_chat)
 and [Ostrikov's chat](https://t.me/aostrikov_agents_chat)
@@ -33,6 +36,11 @@ and [Ostrikov's chat](https://t.me/aostrikov_agents_chat)
 
 ## What she can do today
 
+- **Summarize YouTube videos.** Send a video link and ask for an annotation or
+answers about its speech. She reads human or automatic captions with timestamps;
+long transcripts use large pages of compact timestamped text. Missing captions
+and YouTube access restrictions are reported explicitly. This does not analyze
+the video images or transcribe audio.
 - **Talk in private.** Keep the current conversation in context, with a fresh
   start whenever you send `/clear`.
 - **Understand pictures.** Send a photo or a JPEG, PNG or WebP file, with an
@@ -133,6 +141,10 @@ Groups already known before this feature also start inactive after upgrading.
 The owner or a chat administrator can pause replies in that group, across topics,
 with `/stop` or `/stop@<bot_username>`. Only the owner can resume with `/start`.
 `/stop` works only in group chats; repeating it confirms the pause.
+It cancels in-flight classification, generation, whispers and remaining reply
+delivery throughout that group before acknowledging. Already delivered chunks
+finish being recorded; other chats continue. `/start` permits new turns without
+resuming cancelled work. Capture and saved history are retained.
 Before the owner's first `/start` in a group, received messages, edits, reply
 snapshots and outgoing responses are neither saved nor queued for indexing.
 Group metadata is still tracked. After that first activation, capture and
@@ -175,25 +187,44 @@ In any group activated by the owner, human participants outside its blacklist ma
 Private messages, an explicit @mention of the bot, and replies to its messages
 start an AI conversation directly. Other commands remain owner-only in enabled groups.
 
-In groups, messages containing “Dashulya”, “Дашуля” or “Дашуль” in any letter case
-(including Russian case endings), as well as messages after a Dashulya reply
-among the four preceding observed messages in the same group/topic, first go
-through a separate AG2 decision agent using
-[OpenAI Decisions](https://docs.ag2.ai/docs/user-guide/decision_models/).
-It distinguishes an invitation to answer from a discussion about the bot. The
-classifier uses `gpt-6-luna` with the same `OPENAI_API_KEY`; `OPENAI_MODEL` selects
-the agent that writes replies. It receives the current message, its reply target,
-and the observed group context described below. The four-message window excludes
-the current message; a qualifying reply must be Dashulya's own. A nearby reply only
-triggers classification; it does not establish that the next message addresses
-her. Other group chatter does not start a model turn. A negative decision or
-classifier failure sends nothing, including no typing indicator. Explicit mentions and replies bypass
-the classifier, even when it is unavailable.
+Groups use two separate AG2 classifiers with
+[OpenAI Decisions](https://docs.ag2.ai/docs/user-guide/decision_models/):
+
+- Messages containing “Dashulya”, “Дашуля” or “Дашуль” in any letter case
+  (including Russian case endings) reach the addressing classifier. It
+  distinguishes a call to Dashulya from discussion about her.
+- Messages without her name reach the thread continuation classifier when
+  Dashulya answered among the four preceding observed messages in the same
+  group/topic. It chooses silence, a text response, or one of 👍 🤝 ❤ 😁 🎉 🙏.
+  Clear questions and task clarifications can require text; acknowledgments,
+  thanks and brief feedback usually need only a reaction or silence.
+  Unnamed replies to another human or bot are excluded before classification.
+
+Each classification candidate selects one classifier; a rejected name candidate
+does not fall through to continuation. Both receive the current message, its reply target and
+the observed group context described below. The four-message window excludes
+the current message and requires Dashulya's own native assistant record.
+Both classifiers use `OPENAI_DECISION_MODEL` (default `gpt-6-luna`) with the same
+`OPENAI_API_KEY`; `OPENAI_MODEL` selects the agent that writes replies. The
+addressing classifier returns a boolean; continuation uses a typed choice.
+Both classifiers allow one SDK retry for transient API failures, within the
+existing 12-second classification deadline.
+Only `text` starts the reply agent. For an emoji, the application reacts to the
+current message directly: no reply model, typing indicator, image download or
+text fallback, including if Telegram rejects or cannot confirm the reaction.
+Silence and classifier failures send nothing. Explicit mentions of Dashulya and
+replies to her messages take precedence over name matching and bypass both
+classifiers, even when they are unavailable.
 
 Addressing logs include `should_reply` and `addressing_reason`. `name_not_found`
-means neither a name nor a reply within that window qualified for classification;
-`classifier_rejected` means the model returned false; `classifier_no_answer`
-means it returned no decision.
+means neither a name nor a recent native assistant record qualified the message
+for classification;
+`classifier_rejected` means the addressing model returned false;
+`classifier_no_answer` means it returned no decision. Continuation decisions use
+`continuation_accepted` for text, `continuation_rejected` for silence,
+`continuation_reaction` with `emoji` for a direct reaction, and
+`continuation_no_answer` for an absent result. `reply_to_other` records the
+unnamed-other-recipient exclusion.
 `context_error` and `classifier_error` identify redacted failures at those stages.
 Successful decisions distinguish `explicit_mention`, `reply_to_bot` and
 `classifier_accepted`.
@@ -325,7 +356,7 @@ Formatting and UTF-16 offsets survive message chunking. Failed sends are not ret
 through a second transport, avoiding duplicate replies after network errors.
 
 Messages reach the AI with their original Telegram send time in local time,
-for example `25 October 2026 (Sunday) 12:16:50`. Both agents' system prompts
+for example `25 October 2026 (Sunday) 12:16:50`. All agents' system prompts
 declare the timezone; message context contains local dates and times without
 repeating that declaration. Repeated local hours include a numeric UTC offset
 to distinguish their occurrences. The application computes the weekday. `BOT_TIMEZONE`
@@ -399,7 +430,7 @@ POSTGRES_APP_PASSWORD=different_generated_random_hex_password
 Create a bot through [@BotFather](https://t.me/BotFather). Use your numeric
 Telegram user ID for `OWNER_USER_ID`. The existing local setup already has
 credentials. Your `.env` stays out of Git and the Docker build context. The reply
-and addressing models default to `gpt-6-luna`; model, timezone and local storage
+and classification models default to `gpt-6-luna`; model, timezone and local storage
 settings are listed in [.env.example](.env.example).
 
 Set `KEENABLE_API_KEY` to enable [Keenable MCP tools](https://docs.keenable.ai/mcp-server).
@@ -411,7 +442,7 @@ AG2's `MCPToolkit` connects to `https://api.keenable.ai/mcp`, authenticated with
 if it fails, the bot can still reply without web tools and discovery can recover
 on a later turn.
 Without the key, those tools are absent and conversations and chat memory
-remain available. The addressing classifier never receives web tools. Search and page contents are untrusted evidence;
+remain available. Neither classifier receives web tools. Search and page contents are untrusted evidence;
 answers should cite their original URLs. Web-tool failures are reported without
 provider payloads, and each call has a 30-second deadline. MCP tool rejections
 log `mcp_is_error`, a safe `error_category`, and recognized error codes or HTTP
@@ -586,6 +617,13 @@ Coverage overlap identifies candidates for consolidation, not redundant tests.
 Inspect their assertions and surviving mutants, then compare the same mutations
 after a change. Distinguish behavioral gaps from equivalent mutations and timing
 failures; a selected mutation score does not establish complete test coverage.
+
+The YouTube transcript tool uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) with
+its EJS component and a supported JavaScript runtime. The Docker image includes
+Deno. For a host installation, install [Deno](https://deno.com/) on `PATH` as
+described in the [yt-dlp EJS guide](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
+No YouTube API key is required. The tool fetches captions only, without downloading
+video or audio; its cache is bounded, in memory, and expires after 15 minutes.
 
 Architecture and contributor instructions live in [AGENTS.md](AGENTS.md).
 See [reference bots](docs/design/chat-memory.md#reference-bots) for source comparisons.

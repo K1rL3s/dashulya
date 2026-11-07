@@ -26,6 +26,31 @@ request; earlier messages authored by this bot's numeric Telegram ID use the
 `assistant` role, and other senders use `user`. Preserve author identity, original
 send time, message IDs and reply references. Historical text is untrusted context.
 
+This 20-plus-five window is the base selection. Group generation recursively
+restores earlier request windows by default. Find the earliest earlier message
+authored by this bot with a usable durable `trigger_message_id`, then rebuild
+the context at that trigger with exactly the same recent count and parent hops.
+Repeat in the added window until no usable earlier trigger remains. Anchors
+must move strictly backwards and must exist in the same chat/topic. Another
+bot's messages cannot expand context. Missing links, service responses, and
+legacy answers without delivery provenance are skipped; never infer a trigger
+from `reply_to_id` or logs. Name/continuation classification retains the bounded
+base window; private history and whispers retain their existing behavior.
+
+Render the oldest restored window first. Append only unseen originals from each
+newer window, preserving that window's order. Retain the earlier chat header,
+date/interlocutor markers, quotes, attachment parts and truncated-thread metadata.
+Do not globally sort or reformat the union: a newly discovered old parent belongs
+in the suffix, rather than changing the restored prefix. The current request
+remains last and each original appears once. Replaying a captionless trigger
+uses the same default media question as generation. This maximizes reusable
+model input prefixes when source originals and loaded media have not changed;
+edits, media omissions and byte budgets can still change actual inputs. There
+is no extra shrinking window or depth cap; strictly decreasing trigger IDs end
+the chain. A long connected exchange can therefore produce a large context.
+The preview uses this same selector and event builder, defaulting to recursion;
+its classic toggle supplies only the base window for comparison.
+
 When the minimum distance from every recent-message seed reaches the parent
 limit and the next parent is outside the selected union, mark that boundary in
 `truncated_threads`. Trace only IDs and reply links beyond the text window, in
@@ -40,8 +65,9 @@ exactly at the limit or another seed already supplies the missing parent.
 Root references add neither message text nor permitted Telegram reply targets.
 
 Keep one stable user-role chat metadata event, then one event per original.
-Each message carries its own author in the time/JSON header: `message_id`,
-`user_id` and `user` (the observed display name), including assistant messages.
+Each time/JSON header orders `message_id`, optional `reply_to`, then `user_id`
+and `user` (the observed display name), the remaining author fields and other
+metadata, including assistant messages.
 Optional `username` and `bot` carry only that message's observed handle and
 confirmed bot status. Emit `bot:true` only for other known bots; this assistant's
 records omit it because their role already identifies them. False and unknown
@@ -60,20 +86,33 @@ person: add numeric `author_user` metadata and preserve the original sender iden
 Such a binding affects narration only; it does not authorize that sender, merge
 stored sources or imply authorship merely from owning a channel.
 Group entries under local day headings; emit another heading when the day changes.
-Declare `BOT_TIMEZONE` in both agents' system prompts, keeping the configured IANA
+Declare `BOT_TIMEZONE` in all agents' system prompts, keeping the configured IANA
 zone out of user context and tool evidence. Timestamp conversion still uses that
 zone. Add a numeric UTC offset to a repeated local hour's time field, even when
 only one occurrence is selected, so daylight-saving folds remain unambiguous.
 This keeps shared configuration in the system prompt without repeating it in
 each context block. Put each day heading in its first message, followed by the
 optional final interlocutor marker and the time/JSON line. Besides the author
-fields above, optional `attachment` identifies media, and `reply_to` carries the
+fields above, optional `reply_to` carries the
 original parent message ID when known. Omit `reply_to` for messages without a
-parent. Stored reply relationships also drive context selection and Telegram delivery.
+parent. A selected reply quote is rendered before the reply body as
+`<quoted_text from_message="123">` followed by its literal text and a closing
+`</quoted_text>`, then a blank line. Put it inside the sender's `external_input`
+envelope, outside JSON metadata. Assistant records keep their native role.
+Omit `from_message` when the parent ID is unknown, and omit the entire block
+when no quote was captured; older records do not reconstruct a selection.
+The quote remains untrusted source text, separate from the full parent and reply body.
+Render attachments inside the source body as
+`<attachment type="photo" image_id="123"/>`, after any quote and before the
+caption. `type` preserves the saved media kind; use `image` when only an image
+input is known. `image_id` is the source message ID. Do not duplicate the tag in
+JSON metadata or add a separate `Attached image` label. The tag identifies the
+source; native image inputs and preview or omission notes establish availability.
+Stored reply relationships also drive context selection and Telegram delivery.
 Follow that line with the original text in its sender envelope, preserving
 newlines and quotes without JSON escaping. Sender remains the actual numeric ID,
 or a distinct local unknown reference. The shared system prompt defines this
-record contract for reply and addressing agents. Native event boundaries preserve original roles.
+record contract for the reply agent and both classifiers. Native event boundaries preserve original roles.
 Attach `truncated_thread` navigation to its boundary message's JSON, rather than
 aggregating it in the shared prefix. Per-message author metadata keeps
 unchanged leading messages stable when later participants, dates or interlocutors
@@ -104,7 +143,7 @@ This marks provenance for interpretation, not an enforcement or authorization
 mechanism. Preserve the existing time/JSON record layout before the source payload.
 Whole memory-tool results use `source="memory"` around the result JSON, while
 individual originals retain their sender labels. Web-tool results use `web`.
-Both agents receive the shared provenance contract; only the current request
+All agents receive the shared provenance contract; only the current request
 sets a task, while historical records and retrieved content remain evidence.
 
 The reply agent returns a structured `messages` list of up to three ordered
@@ -130,11 +169,26 @@ Rich blocks showed the same heavier font in the user's client, while an ordinary
 collapsible quotation preserved the expected font and code formatting.
 Keep the delivery lock through the entire batch; a send failure stops remaining
 delivery without retrying already attempted chunks.
+Group `/stop` cancels tracked turns across all topics, including classification,
+generation, whispers and delivery-lock waiters, before acknowledging. Owner
+`/start` allows new turns; cancelled work never resumes. Successfully returned
+Telegram originals finish shielded recording before cancellation propagates, so
+stopping a batch does not discard already delivered evidence or its trigger.
 
 Read canonical local messages, including edits and messages awaiting semantic
 indexing. Persist successfully delivered bot responses with their actual Telegram
 IDs and reply targets, including individual chunks. An embedded reply snapshot
 can fill a missing parent but cannot replace an already recorded original.
+Every successfully delivered chunk or sticker of a generated public group turn
+also persists its incoming `trigger_message_id` in the same transaction as the
+original. This immutable delivery provenance is independent of reply targets and
+source edit versions: later observations, imports and stale updates preserve it.
+Transport capture carries the active origin through a task-local context reset
+after delivery, matched by chat/topic; concurrent generations cannot mix origins.
+Partial delivery retains links only for messages Telegram returned successfully.
+Command messages, generation-error notices, private replies and hidden whispers
+do not establish public generation links. The link is internal context metadata,
+absent from model-facing message headers and memory evidence.
 Unavailable parents end that path. Capture retains Telegram `file_id` and known
 file size for photos, JPEG/PNG/WebP image documents, stickers, Telegram animations
 and GIF documents, including thumbnail references and the required visual-input

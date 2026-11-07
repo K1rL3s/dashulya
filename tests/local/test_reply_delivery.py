@@ -540,6 +540,66 @@ class TestReplyDelivery:
         assert [row.message_id for row in rows] == [100, 101]
         assert rows[0].reply_to_id == 25
         assert rows[0].thread_id == topic
+        assert [getattr(row, "trigger_message_id", None) for row in rows] == (
+            [1, 1] if chat_id < 0 else [None, None]
+        )
+
+    async def test_partial_batch_records_chunk_and_sticker_origins_then_resets_capture(
+        self,
+    ) -> None:
+        recorded = AsyncMock(spec=MessageRecorder)
+        self.bot.session.middleware(
+            CaptureSentMessagesMiddleware(recorded, activated_group_registry())
+        )
+        self.dialogue.reply.return_value = ReplyBatch((
+            Reply("x" * 5000, 2),
+            Reply(sticker="joy"),
+            Reply("Fail"),
+        ))
+        next_id = 200
+
+        async def request(bot: Bot, method: TelegramMethod[Any], **kwargs: Any) -> Any:
+            nonlocal next_id
+            if isinstance(method, GetStickerSet):
+                return dashulya_sticker_set()
+            if isinstance(method, (SendMessage, SendSticker)):
+                if isinstance(method, SendMessage) and method.text == "Fail":
+                    raise TelegramNetworkError(method, "Connection lost")
+                response = Message.model_validate({
+                    "message_id": next_id,
+                    "date": 1700000000,
+                    "chat": {"id": -123, "type": "supergroup", "title": "Group"},
+                    "from": {"id": bot.id, "is_bot": True, "first_name": "Dashulya"},
+                    "text": method.text if isinstance(method, SendMessage) else None,
+                    "sticker": next(
+                        sticker
+                        for sticker in dashulya_sticker_set().stickers
+                        if sticker.file_id == method.sticker
+                    ).model_dump()
+                    if isinstance(method, SendSticker)
+                    else None,
+                })
+                next_id += 1
+                return response
+            return True
+
+        self.requests.side_effect = request
+        incoming = Message.model_validate({
+            "message_id": 10,
+            "date": 1700000000,
+            "chat": {"id": -123, "type": "supergroup", "title": "Group"},
+            "from": {"id": 42, "is_bot": False, "first_name": "Owner"},
+            "text": "Question",
+        }).as_(self.bot)
+        with pytest.raises(TelegramNetworkError):
+            await self.delivery.reply(incoming)
+        await self.bot.send_message(-123, "Service notice")
+        rows = [call.args[0] for call in recorded.record.await_args_list]
+        assert [row.message_id for row in rows] == [200, 201, 202, 203]
+        assert [row.trigger_message_id for row in rows] == [10, 10, 10, None]
+        assert rows[0].reply_to_id == 2
+        assert rows[2].media_type == "sticker"
+        assert rows[-1].text == "Service notice"
 
     @pytest.mark.parametrize(
         ("body", "collapsed"),

@@ -263,6 +263,7 @@ async def chat_history(
         chat_username TEXT NULL,             -- Group handle without @, e.g. 'example_chat'.
         topic_id BIGINT NULL,                -- Forum topic ID.
         reply_to_message_id BIGINT NULL,     -- Parent message ID in the same chat/topic.
+        quoted_text TEXT NULL,              -- Selected reply quote, in its original language.
         edited_at TIMESTAMPTZ NULL,
         media_type TEXT NULL,               -- E.g. photo, sticker, animation.
         url TEXT NULL,                      -- Original message link.

@@ -8,8 +8,8 @@ from ag2 import Agent
 from ag2.testing import TestConfig, TrackingConfig
 
 from dashulya.ai.addressing import GroupAddressing
-from dashulya.ai.agents.factory import create_decision_agent
-from dashulya.domain.messages import GroupMessage
+from dashulya.ai.agents.factory import create_continuation_agent, create_decision_agent
+from dashulya.domain.messages import ContinuationAction, GroupMessage
 from tests.support import input_payload
 
 MESSAGE = GroupMessage(
@@ -21,15 +21,122 @@ MESSAGE = GroupMessage(
 )
 
 
+@pytest.mark.parametrize("other_is_bot", [False, True])
+async def test_unnamed_reply_to_another_participant_never_starts_a_model_turn(
+    other_is_bot: bool,
+) -> None:
+    config = TrackingConfig(TestConfig('{"data":"text"}'))
+    addressing = GroupAddressing(
+        create_decision_agent(TestConfig('{"data":false}')),
+        continuation_agent=create_continuation_agent(config),
+        bot_id=123,
+        bot_username="dashulya_bot",
+    )
+    message = replace(
+        MESSAGE,
+        reply_to=replace(MESSAGE, sender_id=456, sender_is_bot=other_is_bot),
+    )
+
+    decision = await addressing.decide(
+        message, recent_conversation=[{"role": "assistant", "text": "Earlier answer"}]
+    )
+
+    assert not decision.should_reply
+    assert decision.reaction is None
+    assert decision.reason == "reply_to_other"
+    assert config.calls == []
+
+
+@pytest.mark.parametrize("action", list(ContinuationAction))
+async def test_continuation_action_selects_text_silence_or_a_direct_reaction(
+    action: ContinuationAction,
+) -> None:
+    name_config = TrackingConfig(TestConfig('{"data":"text"}'))
+    action_config = TrackingConfig(TestConfig(json.dumps({"data": action})))
+    addressing = GroupAddressing(
+        create_decision_agent(name_config),
+        continuation_agent=create_continuation_agent(action_config),
+        bot_id=123,
+        bot_username="dashulya_bot",
+    )
+
+    decision = await addressing.decide(
+        MESSAGE,
+        recent_conversation=[{"role": "assistant", "text": "Earlier answer"}],
+    )
+
+    assert decision.should_reply is (action is ContinuationAction.TEXT)
+    assert decision.reaction == (
+        None if action in {ContinuationAction.IGNORE, ContinuationAction.TEXT} else action
+    )
+    assert len(action_config.calls) == 1
+    assert name_config.calls == []
+
+
+@pytest.mark.parametrize(
+    ("named", "name_answer", "continuation_answer", "expected", "reason"),
+    [
+        (True, True, False, True, "classifier_accepted"),
+        (True, False, True, False, "classifier_rejected"),
+        (False, True, False, False, "continuation_rejected"),
+        (False, False, True, True, "continuation_accepted"),
+    ],
+)
+async def test_names_and_implicit_followups_use_distinct_classifiers(
+    named: bool,
+    name_answer: bool,
+    continuation_answer: bool,
+    expected: bool,
+    reason: str,
+) -> None:
+    name_config = TrackingConfig(TestConfig(json.dumps({"data": name_answer})))
+    continuation_config = TrackingConfig(
+        TestConfig(
+            json.dumps({
+                "data": ContinuationAction.TEXT
+                if continuation_answer
+                else ContinuationAction.IGNORE
+            })
+        )
+    )
+    addressing = GroupAddressing(
+        create_decision_agent(name_config),
+        continuation_agent=create_continuation_agent(continuation_config),
+        bot_id=123,
+        bot_username="dashulya_bot",
+        owner_id=42,
+    )
+    message = replace(
+        MESSAGE,
+        text="Dashulya is a bot" if named else "And for the whole week?",
+    )
+    recent = [
+        {"role": "user", "text": "Summarize today's discussion"},
+        {"role": "assistant", "text": "Here is today's summary"},
+    ]
+
+    decision = await addressing.decide(message, recent_conversation=recent)
+
+    assert decision.should_reply is expected
+    assert decision.reason == reason
+    selected = name_config if named else continuation_config
+    skipped = continuation_config if named else name_config
+    assert len(selected.calls) == 1
+    assert skipped.calls == []
+
+
 @pytest.mark.parametrize(
     ("reply_position", "expected"), [(1, True), (4, True), (5, False)]
 )
 async def test_recent_answer_opens_classification_for_four_previous_messages(
     reply_position: int, expected: bool
 ) -> None:
-    config = TrackingConfig(TestConfig('{"data":true}'))
+    config = TrackingConfig(TestConfig('{"data":"text"}'))
     addressing = GroupAddressing(
-        create_decision_agent(config), bot_id=123, bot_username="dashulya_bot"
+        create_decision_agent(TestConfig('{"data":false}')),
+        continuation_agent=create_continuation_agent(config),
+        bot_id=123,
+        bot_username="dashulya_bot",
     )
     recent = [
         {"role": "user", "text": "Saved group context"},
@@ -42,20 +149,23 @@ async def test_recent_answer_opens_classification_for_four_previous_messages(
     decision = await addressing.decide(MESSAGE, recent_conversation=recent)
     assert decision.should_reply is expected
     assert len(config.calls) == (1 if expected else 0)
-    assert decision.reason == ("classifier_accepted" if expected else "name_not_found")
+    assert decision.reason == ("continuation_accepted" if expected else "name_not_found")
 
 
-async def test_recent_answer_still_requires_classifier_acceptance() -> None:
-    config = TrackingConfig(TestConfig('{"data":false}'))
+async def test_recent_answer_still_requires_continuation_acceptance() -> None:
+    config = TrackingConfig(TestConfig('{"data":"ignore"}'))
     addressing = GroupAddressing(
-        create_decision_agent(config), bot_id=123, bot_username="dashulya_bot"
+        create_decision_agent(TestConfig('{"data":false}')),
+        continuation_agent=create_continuation_agent(config),
+        bot_id=123,
+        bot_username="dashulya_bot",
     )
     decision = await addressing.decide(
         MESSAGE,
         recent_conversation=[{"role": "assistant", "text": "My earlier answer"}],
     )
     assert not decision.should_reply
-    assert decision.reason == "classifier_rejected"
+    assert decision.reason == "continuation_rejected"
     assert len(config.calls) == 1
 
 
@@ -69,9 +179,12 @@ async def test_recent_answer_still_requires_classifier_acceptance() -> None:
 async def test_other_bots_and_quoted_roles_do_not_open_the_recent_answer_window(
     text: str,
 ) -> None:
-    config = TrackingConfig(TestConfig('{"data":true}'))
+    config = TrackingConfig(TestConfig('{"data":"text"}'))
     addressing = GroupAddressing(
-        create_decision_agent(config), bot_id=123, bot_username="dashulya_bot"
+        create_decision_agent(TestConfig('{"data":false}')),
+        continuation_agent=create_continuation_agent(config),
+        bot_id=123,
+        bot_username="dashulya_bot",
     )
     decision = await addressing.decide(
         MESSAGE, recent_conversation=[{"role": "user", "text": text}]
@@ -87,8 +200,15 @@ class TestGroupAddressing:
     def _setup(self) -> None:
         self.agent = AsyncMock(spec=Agent)
         self.agent.ask.return_value.content = AsyncMock(return_value=True)
+        self.continuation_agent = AsyncMock(spec=Agent)
+        self.continuation_agent.ask.return_value.content = AsyncMock(
+            return_value=ContinuationAction.IGNORE
+        )
         self.addressing = GroupAddressing(
-            self.agent, bot_id=123, bot_username="dashulya_bot"
+            self.agent,
+            continuation_agent=self.continuation_agent,
+            bot_id=123,
+            bot_username="dashulya_bot",
         )
 
     async def test_direct_mentions_and_replies_work_without_classifier(
@@ -137,11 +257,48 @@ class TestGroupAddressing:
         assert evidence["recent_conversation"] == recent
         assert "stream" not in self.agent.ask.call_args.kwargs
 
-    async def test_classifier_errors_propagate_to_the_delivery_handler(self) -> None:
+    @pytest.mark.parametrize(
+        ("answer", "expected", "reason"),
+        [
+            (ContinuationAction.TEXT, True, "continuation_accepted"),
+            (ContinuationAction.IGNORE, False, "continuation_rejected"),
+            (None, False, "continuation_no_answer"),
+        ],
+    )
+    async def test_continuation_receives_context_and_its_own_decision(
+        self, answer: ContinuationAction | None, expected: bool, reason: str
+    ) -> None:
+        self.continuation_agent.ask.return_value.content.return_value = answer
+        recent = [
+            {"role": "user", "text": "Summarize yesterday's discussion"},
+            {"role": "assistant", "text": "Yesterday's summary"},
+        ]
+        message = replace(MESSAGE, text="And for the whole week?")
+
+        decision = await self.addressing.decide(message, recent_conversation=recent)
+
+        assert (decision.should_reply, decision.reason) == (expected, reason)
+        self.agent.ask.assert_not_awaited()
+        incoming = self.continuation_agent.ask.call_args.args[0]
+        assert incoming.startswith('<external_input source="external_user">')
+        evidence = json.loads(input_payload(incoming))
+        assert evidence["current_message"] == message.context()
+        assert evidence["recent_conversation"] == recent
+        assert "stream" not in self.continuation_agent.ask.call_args.kwargs
+
+    @pytest.mark.parametrize("continuation", [False, True])
+    async def test_classifier_errors_propagate_to_the_delivery_handler(
+        self, continuation: bool
+    ) -> None:
         self.agent.ask.side_effect = TimeoutError
+        self.continuation_agent.ask.side_effect = TimeoutError
         with pytest.raises(TimeoutError):
             await self.addressing.should_reply(
-                replace(MESSAGE, text="Dashulya, help"), recent_conversation=[]
+                replace(
+                    MESSAGE,
+                    text="And for the whole week?" if continuation else "Dashulya, help",
+                ),
+                recent_conversation=[{"role": "assistant", "text": "Earlier answer"}],
             )
 
     @pytest.mark.parametrize(
@@ -151,7 +308,11 @@ class TestGroupAddressing:
         self, owner_id: int, source: str
     ) -> None:
         addressing = GroupAddressing(
-            self.agent, bot_id=123, bot_username="dashulya_bot", owner_id=owner_id
+            self.agent,
+            continuation_agent=self.continuation_agent,
+            bot_id=123,
+            bot_username="dashulya_bot",
+            owner_id=owner_id,
         )
         message = replace(
             MESSAGE,

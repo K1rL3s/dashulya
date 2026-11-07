@@ -17,6 +17,15 @@ _Avoid_: Complete chat list
 The determination that a group message invites Dashulya to answer. An explicit
 mention or reply establishes this directly; a name reference needs interpretation.
 
+**Thread continuation**:
+A new conversational turn that carries on an exchange with Dashulya, including
+an implicit follow-up, correction or social response without an explicit reply.
+It is a semantic relationship, independent of Telegram reply links and topics.
+
+**Continuation action**:
+The chosen response to a possible thread continuation: remain silent, provide a
+text answer, or acknowledge the current message with a reaction.
+
 **Chat memory**:
 Historical messages and source-backed knowledge belonging to one Telegram chat,
 available for recalling its discussions, people, tools and projects.
@@ -32,6 +41,14 @@ send times and reply relationships, within the known coverage.
 **Reply context**:
 The messages from a conversation selected to understand one current request,
 including the earlier messages needed to interpret its replies and references.
+
+**Reply trigger**:
+The incoming message that caused Dashulya to generate an answer. It can differ
+from the message she chooses to address with that answer.
+
+**Context window**:
+The recent conversation around one reply trigger, including its reply ancestors.
+A reply context can restore several such windows from earlier exchanges.
 
 **Accumulated chat knowledge**:
 Source-supported information about a chat's people, tools, projects and discussion

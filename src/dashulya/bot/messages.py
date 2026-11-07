@@ -1,4 +1,7 @@
 import re
+from collections.abc import Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Literal
@@ -8,6 +11,31 @@ from aiogram.types import Animation, Document, Message, Sticker
 
 from dashulya.domain.memory import MemoryMessage, MessageRecorder
 from dashulya.domain.messages import ConversationKey, ImageFile
+
+_reply_trigger: ContextVar[tuple[ConversationKey, int] | None] = ContextVar(
+    "reply_trigger", default=None
+)
+
+
+@contextmanager
+def replying_to(message: Message) -> Generator[None]:
+    """Carry one public request through sent-message capture in this task only."""
+    token = _reply_trigger.set((conversation_key(message), message.message_id))
+    try:
+        yield
+    finally:
+        _reply_trigger.reset(token)
+
+
+def reply_trigger_id(message: Message) -> int | None:
+    trigger = _reply_trigger.get()
+    if (
+        trigger is not None
+        and message.chat.id < 0
+        and conversation_key(message) == trigger[0]
+    ):
+        return trigger[1]
+    return None
 
 
 def is_whisper(message: Message) -> bool:
@@ -107,6 +135,7 @@ async def capture_message(
     text: str | None = None,
     reply_to_id: int | None = None,
     allow_private: bool = False,
+    trigger_message_id: int | None = None,
 ) -> None:
     # Ephemeral originals have reusable IDs and must never enter shared history.
     if is_whisper(message):
@@ -148,6 +177,8 @@ async def capture_message(
             chat_username=message.chat.username,
             thread_id=conversation_key(message)[1],
             reply_to_id=reply_to_id,
+            quoted_text=message.quote.text if message.quote is not None else None,
+            trigger_message_id=trigger_message_id,
             edited_at=datetime.fromtimestamp(message.edit_date, UTC)
             if message.edit_date
             else None,

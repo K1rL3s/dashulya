@@ -29,6 +29,91 @@ class TestMemoryCapture:
     def _setup(self, database: Database) -> None:
         self.database = database
 
+    async def test_reply_trigger_survives_restart_edits_and_stale_observations(
+        self,
+    ) -> None:
+        store = MessageStore(self.database)
+        request = MemoryMessage(
+            -123, 10, "Question", datetime(2026, 11, 7, tzinfo=UTC), 42, "Owner", "Group"
+        )
+        answer = replace(
+            request,
+            message_id=20,
+            text="Answer",
+            author_id=123,
+            author="Dashulya",
+            reply_to_id=5,
+        )
+        await store.record(request)
+        # An update can arrive before the send response is captured.
+        await store.record(replace(answer, update_id=100))
+        await store.record(replace(answer, trigger_message_id=10))
+        await store.record(
+            replace(
+                answer,
+                text="Edited answer",
+                edited_at=datetime(2026, 11, 8, tzinfo=UTC),
+                update_id=101,
+            )
+        )
+        await store.record(answer, if_missing=True)
+        restarted = MessageStore(self.database)
+        context = await restarted.context((-123, None), 20, limit=20, parent_hops=5)
+        saved = context.messages[-1]
+        assert saved.text == "Edited answer"
+        assert getattr(saved, "trigger_message_id", None) == 10
+        assert saved.reply_to_id == 5
+        assert getattr(context.messages[0], "trigger_message_id", None) is None
+        await store.record(replace(answer, message_id=21, trigger_message_id=10))
+        latest = await restarted.context((-123, None), 21, limit=1, parent_hops=0)
+        assert latest.messages[0].trigger_message_id == 10
+
+    async def test_reply_quote_survives_restart_and_updates_independently_of_body(
+        self,
+    ) -> None:
+        parent = self.incoming().model_copy(
+            update={"message_id": 6, "text": 'My project uses SQLite\n"原文" 😀'}
+        )
+        message = Message.model_validate({
+            **self.incoming().model_dump(),
+            "reply_to_message": parent.model_dump(),
+            "quote": {
+                "text": 'SQLite\n"原文" 😀',
+                "position": 16,
+                "is_manual": True,
+            },
+        })
+        store = MessageStore(self.database)
+        await capture_message(store, parent, allow_private=True)
+        for update_id, quoted_text in enumerate(
+            ['SQLite\n"原文" 😀', "My project", None], start=1
+        ):
+            current = message.model_copy(
+                update={
+                    "quote": message.quote.model_copy(update={"text": quoted_text})
+                    if quoted_text is not None and message.quote is not None
+                    else None
+                }
+            )
+            await capture_message(store, current, update_id=update_id, allow_private=True)
+            # An embedded snapshot cannot overwrite a recorded original's quote.
+            await capture_message(store, message, if_missing=True, allow_private=True)
+            restarted = MessageStore(self.database)
+            context = await restarted.context((42, None), 7, limit=20, parent_hops=5)
+            assert context.messages[-1].quoted_text == quoted_text
+            assert context.messages[-1].reply_to_id == 6
+            assert context.messages[-1].text == "My project uses SQLite"
+            assert context.messages[0].quoted_text is None
+            originals = await restarted.originals(MemoryAccess(42, True))
+            saved = next(original for original in originals if original.message_id == 7)
+            assert saved.quoted_text == quoted_text
+            assert saved.render()["quoted_text"] == quoted_text
+            history = CanonicalHistory(restarted, MemoryAccess(42, True))
+            result = await history.sql([
+                "SELECT quoted_text FROM messages WHERE message_id = 7"
+            ])
+            assert result["results"][0]["rows"] == [{"quoted_text": quoted_text}]
+
     async def test_image_and_gif_documents_retain_references(
         self,
     ) -> None:

@@ -73,6 +73,7 @@ class TestDependency:
             "chat_history",
             "retry_image",
             "set_reaction",
+            "youtube_transcript",
             "code_execution",
         ]
         assert await (await reply.ask("Hello")).content() == ReplyBatch((Reply("Hello"),))
@@ -149,7 +150,7 @@ class TestDependency:
                     await container.get(Agent[bool]),
                     "/v1/decisions",
                     "decision-model",
-                    1,
+                    2,
                     10,
                 ),
             )
@@ -174,7 +175,7 @@ class TestDependency:
                         body = json.loads(request.content)
                         assert body["model"] == model
                         if path == "/v1/responses":
-                            assert body == IsPartialDict(reasoning={"effort": "medium"})
+                            assert body == IsPartialDict(reasoning={"effort": "high"})
 
     async def test_concurrent_ag2_turns_share_app_state_and_isolate_tool_scopes(
         self,
