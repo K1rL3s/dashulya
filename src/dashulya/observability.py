@@ -60,6 +60,8 @@ _CONTEXT_FIELDS = (
     "completion_tokens",
     "thinking_tokens",
     "cached_input_tokens",
+    "cache_hit",
+    "cached_input_percent",
     "error_type",
     "mcp_is_error",
     "error_category",

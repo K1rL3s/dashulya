@@ -340,6 +340,13 @@ image counts. Successful model-call events also include the raw `agent_output`,
 JSON or an oversized message list; model-call success does not imply valid output.
 `AI reply validation failed` records validation error types and field paths.
 Schema rejection does not automatically request another model response.
+Each successful reply-model call also logs `cached_input_tokens` from provider
+usage, `cache_hit` (positive cached tokens), and `cached_input_percent`
+(`100 * cached_input_tokens / prompt_tokens`, rounded to two decimal places).
+Missing cache usage yields null, not a reported cache miss; the percentage is
+also null when the input total is missing or zero. A hit can cover only part of
+the input. Tool rounds produce separate model-call records with the same
+chat/message correlation; their percentages are not added together.
 An AG2 observer logs provider-hosted tools, including Code Interpreter, as
 `AI builtin tool call observed` and `AI builtin tool result observed`, with
 `tool_name`, `tool_call_id`, chat/message IDs and `tool_status` when supplied.

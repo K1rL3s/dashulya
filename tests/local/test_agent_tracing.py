@@ -44,11 +44,32 @@ class TestAgentTracing:
         self.event = ModelRequest(parts=[TextInput("PRIVATE REQUEST")])
         self.trace = ReplyTrace(self.event, self.context)
 
+    @pytest.mark.parametrize(
+        ("prompt", "cached", "hit", "percentage"),
+        [
+            (100, 75, True, 75.0),
+            (100, 0, False, 0.0),
+            (100, None, None, None),
+            (0, 0, False, None),
+            (None, 25, True, None),
+            (3, 1, True, 33.33),
+        ],
+    )
     async def test_model_timing_and_usage_are_logged_without_payload(
-        self, caplog: pytest.LogCaptureFixture
+        self,
+        caplog: pytest.LogCaptureFixture,
+        prompt: float | None,
+        cached: float | None,
+        hit: bool | None,
+        percentage: float | None,
     ) -> None:
         response = ModelResponse(
-            usage=Usage(prompt_tokens=100, completion_tokens=25, thinking_tokens=15),
+            usage=Usage(
+                prompt_tokens=prompt,
+                completion_tokens=25,
+                thinking_tokens=15,
+                cache_read_input_tokens=cached,
+            ),
             model="test-model",
         )
         call = AsyncMock(return_value=response)
@@ -68,7 +89,10 @@ class TestAgentTracing:
         assert event == IsPartialDict(
             level="INFO",
             duration_ms=125,
-            prompt_tokens=100,
+            prompt_tokens=prompt,
+            cached_input_tokens=cached,
+            cache_hit=hit,
+            cached_input_percent=percentage,
             thinking_tokens=15,
             message_id=7,
             outcome="ok",

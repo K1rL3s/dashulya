@@ -183,6 +183,8 @@ class ReplyTrace(BaseMiddleware):
                 },
             )
             raise
+        cached = response.usage.cache_read_input_tokens
+        prompt = response.usage.prompt_tokens
         logger.info(
             "AI model call completed",
             extra={
@@ -192,7 +194,11 @@ class ReplyTrace(BaseMiddleware):
                 "prompt_tokens": response.usage.prompt_tokens,
                 "completion_tokens": response.usage.completion_tokens,
                 "thinking_tokens": response.usage.thinking_tokens,
-                "cached_input_tokens": response.usage.cache_read_input_tokens,
+                "cached_input_tokens": cached,
+                "cache_hit": cached > 0 if cached is not None else None,
+                "cached_input_percent": round(100 * cached / prompt, 2)
+                if cached is not None and prompt is not None and prompt > 0
+                else None,
             },
         )
         return response
