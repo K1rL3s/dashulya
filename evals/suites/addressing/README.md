@@ -1,12 +1,19 @@
 # Addressing classifier evaluation
 
-Compare classifier prompts using frozen regex candidates and source context.
+Compare classifier prompts using frozen messages and source context.
 Preparation and scoring are offline. Only the explicit `run` command calls the
 paid Decisions API; it reads exported model inputs, never expert labels.
 
-Private datasets live under ignored `evals/datasets/addressing/`. Read their
+The single private dataset lives under ignored `evals/datasets/addressing/`. Read its
 README for provenance, coverage, annotation policy and split limitations.
 Generated inputs, predictions and reports belong under `evals/runs/`.
+
+The maintained local dataset is `evals/datasets/addressing`: 366 cases,
+including 11 reviewed regressions (eight silent, three reply). It preserves
+the existing inputs and test partition; the additions are calibration data.
+Future reviewed cases update this dataset in place. Five additions
+were classified by an older workflow and no longer pass the production name
+gate; their semantic intent and current routing are recorded separately.
 
 ## Dataset contract
 
@@ -25,10 +32,10 @@ mention/reply routes that bypass the classifier. Report that panel separately.
 ## Prepare inputs
 
 ```sh
-uv run python -m evals.suites.addressing validate evals/datasets/addressing/20261103-v1
-uv run python -m evals.suites.addressing export evals/datasets/addressing/20261103-v1 \
+uv run python -m evals.suites.addressing validate evals/datasets/addressing
+uv run python -m evals.suites.addressing export evals/datasets/addressing \
   --partition calibration --out evals/runs/addressing/prompt-a/calibration-inputs
-uv run python -m evals.suites.addressing export evals/datasets/addressing/20261103-v1 \
+uv run python -m evals.suites.addressing export evals/datasets/addressing \
   --partition test --out evals/runs/addressing/prompt-a/test-inputs
 ```
 
@@ -45,13 +52,13 @@ root `.env`; model selection defaults to `OPENAI_DECISION_MODEL`.
 ```sh
 uv run python -m evals.suites.addressing run \
   --inputs evals/runs/addressing/prompt-a/calibration-inputs/inputs.jsonl \
-  --prompt evals/datasets/addressing/20261103-v1/prompts/recall-first.txt \
+  --prompt evals/datasets/addressing/prompts/recall-first.txt \
   --out evals/runs/addressing/prompt-a/calibration-run
 ```
 
 Each classification uses a fresh AG2 stream and the production decision model
-configuration: ten-second provider timeout, no retries, twelve-second outer
-deadline. The run preserves the raw Decisions predicate `probability` from
+configuration, including its provider timeout/retry policy and a twelve-second
+outer deadline. The run preserves the raw Decisions predicate `probability` from
 response metadata, before AG2 converts it to a boolean at threshold 0.5. This
 is a provider probability, not a self-reported confidence or a thresholded label.
 
@@ -67,7 +74,7 @@ calibration data according to the desired recall/false-positive tradeoff, then
 evaluate the fixed prompt and threshold on the test partition.
 
 ```sh
-uv run python -m evals.suites.addressing score evals/datasets/addressing/20261103-v1 \
+uv run python -m evals.suites.addressing score evals/datasets/addressing \
   --partition calibration \
   --predictions evals/runs/addressing/prompt-a/calibration-run/predictions.jsonl \
   --min-recall 0.98 --out evals/runs/addressing/prompt-a/calibration-metrics

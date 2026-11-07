@@ -192,7 +192,8 @@ Groups use two separate AG2 classifiers with
 
 - Messages containing “Dashulya”, “Дашуля” or “Дашуль” in any letter case
   (including Russian case endings) reach the addressing classifier. It
-  distinguishes a call to Dashulya from discussion about her.
+  distinguishes a call to Dashulya from discussion about her using only the
+  current message and its sender/time metadata, without history or a reply parent.
 - Messages without her name reach the thread continuation classifier when
   Dashulya answered among the four preceding observed messages in the same
   group/topic. It chooses silence, a text response, or one of 👍 🤝 ❤ 😁 🎉 🙏.
@@ -201,8 +202,10 @@ Groups use two separate AG2 classifiers with
   Unnamed replies to another human or bot are excluded before classification.
 
 Each classification candidate selects one classifier; a rejected name candidate
-does not fall through to continuation. Both receive the current message, its reply target and
-the observed group context described below. The four-message window excludes
+does not fall through to continuation. The name classifier receives
+`current_message.reply_to=null` and `recent_conversation=[]`; the continuation
+classifier receives the current message, its reply target and the observed group
+context described below. The four-message window excludes
 the current message and requires Dashulya's own native assistant record.
 Both classifiers use `OPENAI_DECISION_MODEL` (default `gpt-6-luna`) with the same
 `OPENAI_API_KEY`; `OPENAI_MODEL` selects the agent that writes replies. The

@@ -102,7 +102,11 @@ who cannot invoke replies; hidden questions remain excluded from shared history.
 Authorized private messages and explicit group mentions/replies to this bot
 invoke the reply agent directly. Group messages naming Dashulya, including
 “Дашуль” in any letter case, first pass an AG2 OpenAI Decisions classifier with
-bounded chat/topic context. Messages without her name reach a separate thread
+only the current message and its sender/time metadata. Its model input sets
+`current_message.reply_to` to null and `recent_conversation` to an empty list.
+Use the original message for routing and delivery; this input reduction does not
+remove stored reply relationships or the reply agent's context.
+Messages without her name reach a separate thread
 continuation classifier when one of the four preceding observed messages in that
 group/topic was from Dashulya. Exclude the current message from this window. A
 qualifying reply must be a native assistant record, not another bot or role claims
@@ -150,7 +154,8 @@ hops at every level. Earlier rendered blocks remain a stable prefix; newer
 windows append unseen originals. Triggers are separate from chosen reply
 targets and are saved for every successful generated chunk or sticker. Legacy
 answers without a known trigger retain ordinary window behavior. Classifiers
-continue to use bounded context. The local preview shares the production
+use current-message-only input for names and bounded context for continuations.
+The local preview shares the production
 algorithm; its classic toggle remains available for comparison.
 
 ### Private whispers inside groups

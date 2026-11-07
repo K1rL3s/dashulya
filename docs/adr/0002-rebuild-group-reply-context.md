@@ -34,8 +34,15 @@ Repeat in the added window until no usable earlier trigger remains. Anchors
 must move strictly backwards and must exist in the same chat/topic. Another
 bot's messages cannot expand context. Missing links, service responses, and
 legacy answers without delivery provenance are skipped; never infer a trigger
-from `reply_to_id` or logs. Name/continuation classification retains the bounded
+from `reply_to_id` or logs. Thread continuation classification retains the bounded
 base window; private history and whispers retain their existing behavior.
+Named addressing classification uses only the current message and its sender/time
+metadata: `current_message.reply_to=null`, `recent_conversation=[]`. Frozen
+evaluations favored this input over both the full window and shortened histories;
+the current-message-only input reduced unrelated context influencing the addressee
+decision. Apply this reduction only after routing against the original message.
+Direct replies, mentions, stored originals and reply-generation context retain
+their original relationships.
 
 Render the oldest restored window first. Append only unseen originals from each
 newer window, preserving that window's order. Retain the earlier chat header,
@@ -112,7 +119,9 @@ Stored reply relationships also drive context selection and Telegram delivery.
 Follow that line with the original text in its sender envelope, preserving
 newlines and quotes without JSON escaping. Sender remains the actual numeric ID,
 or a distinct local unknown reference. The shared system prompt defines this
-record contract for the reply agent and both classifiers. Native event boundaries preserve original roles.
+record contract for the reply agent and contextual continuation classifier.
+Named addressing receives the separate current-message JSON instead of rendered
+historical records. Native event boundaries preserve original roles.
 Attach `truncated_thread` navigation to its boundary message's JSON, rather than
 aggregating it in the shared prefix. Per-message author metadata keeps
 unchanged leading messages stable when later participants, dates or interlocutors

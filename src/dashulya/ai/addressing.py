@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from dataclasses import replace
 
 from ag2 import Agent
 
@@ -62,7 +63,9 @@ class GroupAddressing:
         ):
             return AddressingDecision(True, "explicit_mention")
         if _AGENT_NAME_PATTERN.search(message.text) is not None:
-            decision = await self._classify(self._agent, message, recent_conversation)
+            decision = await self._classify(
+                self._agent, replace(message, reply_to=None), []
+            )
             if decision is None:
                 return AddressingDecision(False, "classifier_no_answer")
             if decision is True:

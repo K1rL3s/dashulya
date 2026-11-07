@@ -246,15 +246,25 @@ class TestGroupAddressing:
                 )
         self.agent.ask.assert_not_awaited()
 
-    async def test_name_decision_receives_current_message_and_recent_context(
+    async def test_name_decision_receives_only_current_message(
         self,
     ) -> None:
         recent = [{"role": "assistant", "text": "An earlier answer"}]
         message = replace(MESSAGE, text="Dashulya, help", reply_to=MESSAGE)
         assert await self.addressing.should_reply(message, recent_conversation=recent)
         evidence = json.loads(input_payload(self.agent.ask.call_args.args[0]))
-        assert evidence["current_message"] == message.context()
-        assert evidence["recent_conversation"] == recent
+        assert evidence == {
+            "current_message": {
+                "message_id": 1,
+                "text": "Dashulya, help",
+                "sender_id": 42,
+                "sender_name": "Anna",
+                "sender_is_bot": False,
+                "sent_at": "2026-10-25T00:00:00+00:00",
+                "reply_to": None,
+            },
+            "recent_conversation": [],
+        }
         assert "stream" not in self.agent.ask.call_args.kwargs
 
     @pytest.mark.parametrize(

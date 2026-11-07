@@ -600,7 +600,11 @@ class TestAIHandler(_AIHandlerFixture):
         assert context["text"] == "DASHULYA, help"
         assert context["sender_id"] == 42
 
-    async def test_classifier_gets_reply_to_another_participant(self) -> None:
+    async def test_named_classifier_omits_context_but_delivery_keeps_reply(self) -> None:
+        self.decision_agent.ask.return_value.content.return_value = True
+        self.dialogue.recent_context.return_value = [
+            {"role": "assistant", "text": "An earlier answer"}
+        ]
         await self.message(
             "Тебе нравится ответ Дашули?",  # ruff: ignore[ambiguous-unicode-character-string] -- Russian addressing example.
             chat=GROUP,
@@ -612,12 +616,11 @@ class TestAIHandler(_AIHandlerFixture):
                 "text": "Let's discuss it",
             },
         )
-        context = json.loads(input_payload(self.decision_agent.ask.call_args.args[0]))[
-            "current_message"
-        ]
-        assert context["reply_to"]["sender_id"] == 43
-        assert context["reply_to"]["text"] == "Let's discuss it"
-        self.dialogue.reply.assert_not_awaited()
+        context = json.loads(input_payload(self.decision_agent.ask.call_args.args[0]))
+        assert context["current_message"]["reply_to"] is None
+        assert context["recent_conversation"] == []
+        self.dialogue.reply.assert_awaited_once()
+        assert self.dialogue.reply.call_args.args[0].reply_to_id == 100
 
     async def test_classifier_failure_is_silent_and_direct_ping_still_works(
         self, caplog: pytest.LogCaptureFixture
