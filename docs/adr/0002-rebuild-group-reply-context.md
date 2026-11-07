@@ -43,7 +43,9 @@ Keep one stable user-role chat metadata event, then one event per original.
 Each message carries its own author in the time/JSON header: `message_id`,
 `user_id` and `user` (the observed display name), including assistant messages.
 Optional `username` and `bot` carry only that message's observed handle and
-confirmed bot status. Emit only `bot:true`; false and unknown flags are omitted.
+confirmed bot status. Emit `bot:true` only for other known bots; this assistant's
+records omit it because their role already identifies them. False and unknown
+flags are omitted.
 Do not accumulate aliases or emit
 separate author declarations. This layout replaces the earlier incremental
 declarations so each message identifies its author without consulting earlier

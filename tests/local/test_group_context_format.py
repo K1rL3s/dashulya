@@ -64,8 +64,10 @@ class TestGroupContextFormat:
             replace(self.message(2), author_id=456, is_bot=True),
         ])
         assert rendered[1]["role"] == "assistant"
+        assert "bot" not in group_records(rendered[1]["text"])[0]
         assert "<external_input" not in rendered[1]["text"]
         assert rendered[2]["role"] == "user"
+        assert group_records(rendered[2]["text"])[0].get("bot") is True
         assert (
             '\n<external_input source="bot">\nOriginal\n</external_input>'
             in rendered[2]["text"]

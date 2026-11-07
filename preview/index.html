@@ -34,6 +34,15 @@
     .swatch { width:7px; height:7px; border-radius:2px; background:var(--accent); }
     .swatch.recent { background:#c7b9f2; }
     .swatch.parent { background:#d8a35b; }
+    .swatch.expanded { background:#62a5ba; }
+    .algorithm-bar { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; padding:7px 12px; border-bottom:1px solid var(--line); flex-shrink:0; }
+    .algorithm-bar .tabs button { font-size:11px; padding:5px 10px; }
+    .algorithm-bar button[aria-pressed="true"] { background:white; color:var(--ink); box-shadow:0 1px 3px #20202b12; }
+    #algorithm-description { font-size:10px; color:var(--muted); }
+    .expansion-steps { margin-bottom:12px; padding:9px 12px; border:1px solid #cce0e7; border-radius:8px; background:#f2f9fb; font-size:11px; color:#427687; }
+    .expansion-steps summary { cursor:pointer; }
+    .expansion-step { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding-top:8px; }
+    .step-label { color:#427687; font-size:9px; }
     #chat-scroll { flex:1; min-height:0; overflow:auto; background-color:#e8efea; background-image:radial-gradient(#a4bca622 .9px,transparent .9px); background-size:15px 15px; padding:10px 12px 16px; }
     .load-wrap { text-align:center; margin:2px 0 15px; }
     #older { border-radius:20px; font-size:11px; padding:7px 15px; background:#ffffffcb; }
@@ -49,6 +58,7 @@
     .message:hover .bubble { box-shadow:0 0 0 2px #b6a6ed; }
     .message[data-selection="recent"] .bubble { border-left:3px solid #baa9ec; background:#f7f4ff; }
     .message[data-selection="parent"] .bubble { border-left:3px solid #d9a054; background:#fffaf0; }
+    .message[data-selection="expanded"] .bubble { border-left:3px solid #62a5ba; background:#eff9fc; }
     .message[data-selection="current"] .bubble { border:2px solid var(--accent); background:#f5f1ff; box-shadow:0 2px 9px #7058d71c; }
     .message.self .bubble { background:#e1f3ed; border-right:4px solid #1b806e; }
     .message.outside-context { opacity:.5; }
@@ -60,6 +70,7 @@
     .message-footer { display:flex; justify-content:flex-end; align-items:center; gap:8px; color:#8b9590; font-size:9px; margin-top:5px; }
     .selection-label { margin-right:auto; color:var(--accent); font-size:9px; font-weight:600; }
     [data-selection="parent"] .selection-label { color:var(--orange); }
+    [data-selection="expanded"] .selection-label { color:#427687; }
     .reply-quote { display:block; text-align:left; border:0; border-left:2px solid #a7baa8; background:#edf2ed; border-radius:2px 5px 5px 2px; padding:5px 8px; margin:0 0 7px; max-width:100%; font-size:10px; color:#69856b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .media { font-size:11px; padding:15px 20px; margin-bottom:5px; background:#e8eae9; color:#7e8883; border-radius:7px; text-align:center; }
     .media small { display:block; margin-top:5px; font-size:9px; opacity:.7; }
@@ -84,6 +95,7 @@
     pre { margin:0; padding:12px; font:11px/1.65 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre-wrap; overflow-wrap:anywhere; color:#4e5066; tab-size:2; }
     .event.current { border-color:#c4b5ef; }
     .event.parent { border-color:#ead6b9; }
+    .event.expanded { border-color:#a8d2df; }
     .event.current .event-head { background:#f7f3ff; }
     .input-part + .input-part { border-top:1px dashed var(--line); }
     .part-label { display:block; padding:8px 12px 0; color:var(--muted); font:9px ui-monospace,SFMono-Regular,Menlo,monospace; }
@@ -102,11 +114,12 @@
   <div id="notice" role="alert" hidden></div>
   <main>
     <section class="pane" aria-label="Original Telegram messages">
-      <div class="pane-head"><div class="pane-title" id="chat-title">Telegram chat</div><div class="context-parameters" aria-label="Reply context parameters"><label title="Recent messages up to and including the selected message. No upper limit.">Recent ↑ <input id="context-limit" type="number" min="1" step="1" value="20" required aria-label="Number of recent messages, including the selected message"></label><label title="Reply-parent hops from each recent message. No upper limit. Zero disables parent expansion.">Hops <input id="context-hops" type="number" min="0" step="1" value="5" required aria-label="Number of reply-parent hops"></label></div><div class="legend"><span><i class="swatch"></i>Current</span><span><i class="swatch recent"></i>Recent</span><span><i class="swatch parent"></i>Parent</span></div></div>
+      <div class="pane-head"><div class="pane-title" id="chat-title">Telegram chat</div><div class="context-parameters" aria-label="Reply context parameters"><label title="Recent messages up to and including the selected message. No upper limit.">Recent ↑ <input id="context-limit" type="number" min="1" step="1" value="20" required aria-label="Number of recent messages, including the selected message"></label><label title="Reply-parent hops from each window. No upper limit. Zero disables parent expansion.">Hops <input id="context-hops" type="number" min="0" step="1" value="5" required aria-label="Number of reply-parent hops"></label></div><div class="legend"><span><i class="swatch"></i>Current</span><span><i class="swatch recent"></i>Recent</span><span><i class="swatch parent"></i>Parent</span><span><i class="swatch expanded"></i>Expanded</span></div></div>
       <div id="chat-scroll"><div class="load-wrap"><button id="older" hidden>↑ Load older messages</button></div><div id="messages"><div class="empty"><strong>Loading saved messages…</strong></div></div></div>
     </section>
     <section class="pane" aria-label="Agent reply context">
       <div class="pane-head"><div class="pane-title">Agent context <span id="selection-info" class="pane-sub">Select a message</span></div><div id="stats" class="context-stats"></div><div class="tabs" role="tablist" aria-label="Context view"><button id="events-tab" role="tab" aria-selected="true" aria-controls="events-view">Events</button><button id="json-tab" role="tab" aria-selected="false" aria-controls="json-view">JSON</button></div></div>
+      <div class="algorithm-bar"><div class="tabs" role="group" aria-label="Context algorithm"><button id="classic-algorithm" aria-pressed="true">Old</button><button id="recursive-algorithm" aria-pressed="false">Recursive</button></div><span id="algorithm-description">Recent window + reply parents</span></div>
       <div id="context-scroll" aria-live="polite">
         <div id="empty-context" class="empty"><div class="empty-icon">↖</div><strong>A conversation, through the agent’s eyes</strong><p>Click any message to build its reply context. Earlier reply parents can appear beyond the recent window.</p></div>
         <div id="events-view" role="tabpanel" aria-labelledby="events-tab" hidden></div>
@@ -116,9 +129,9 @@
   </main>
   <script>
     const $ = id => document.getElementById(id);
-    const state = { messages:[], chat:null, topic:"", context:null, current:null, timezone:"Europe/Moscow", view:"events", epoch:0, contextRequest:null, loading:false, limit:20, parentHops:5 };
+    const state = { messages:[], chat:null, topic:"", context:null, current:null, timezone:"Europe/Moscow", view:"events", epoch:0, contextRequest:null, loading:false, limit:20, parentHops:5, algorithm:"classic" };
     let parameterTimer;
-    const labels = { current:"Current request", recent:"Recent window", parent:"Reply parent" };
+    const labels = { current:"Current request", recent:"Recent window", parent:"Reply parent", expanded:"Earlier window" };
     function element(tag, className, text) { const node=document.createElement(tag); if(className) node.className=className; if(text!==undefined) node.textContent=text; return node; }
     function notice(text="") { $("notice").hidden=!text; $("notice").textContent=text; }
     function time(value, options) { return new Intl.DateTimeFormat("en-GB", {timeZone:state.timezone,...options}).format(new Date(value)); }
@@ -149,8 +162,8 @@
       $("messages").replaceChildren(fragment); highlightSelection();
     }
     function highlightSelection() {
-      const selected=new Map((state.context?.messages||[]).map(message=>[message.id,message.selection]));
-      document.querySelectorAll(".message").forEach(item=>{ const id=Number(item.dataset.id); const kind=id===state.current?"current":selected.get(id)||""; item.dataset.selection=kind; item.classList.toggle("outside-context",state.context!==null&&!selected.has(id)); item.setAttribute("aria-pressed",String(id===state.current)); item.querySelector(".selection-label").textContent=labels[kind]||""; });
+      const selected=new Map((state.context?.messages||[]).map(message=>[message.id,message]));
+      document.querySelectorAll(".message").forEach(item=>{ const id=Number(item.dataset.id); const selection=selected.get(id); const kind=id===state.current?"current":selection?.selection||""; item.dataset.selection=kind; item.classList.toggle("outside-context",state.context!==null&&!selected.has(id)); item.setAttribute("aria-pressed",String(id===state.current)); item.querySelector(".selection-label").textContent=(labels[kind]||"")+(selection?.selection_depth?` · step ${selection.selection_depth}`:""); });
     }
     async function loadMessages({older=false,around=null}={}) {
       const epoch=state.epoch; const scroll=$("chat-scroll"); const oldHeight=scroll.scrollHeight; const oldTop=scroll.scrollTop;
@@ -169,7 +182,8 @@
       const epoch=state.epoch; state.contextRequest?.abort(); const request=new AbortController(); state.contextRequest=request; state.current=id; state.context=null; highlightSelection(); notice();
       $("selection-info").textContent=`#${id}…`; $("stats").replaceChildren(); $("events-view").hidden=true; $("json-view").hidden=true; $("empty-context").hidden=false;
       try {
-        const result=await api("/api/context",params({message_id:id,limit:state.limit,parent_hops:state.parentHops}),request.signal); if(epoch!==state.epoch||request.signal.aborted) return;
+        const result=await api("/api/context",params({message_id:id,limit:state.limit,parent_hops:state.parentHops,algorithm:state.algorithm}),request.signal); if(epoch!==state.epoch||request.signal.aborted) return;
+        history.replaceState(null,"","?"+params({message_id:id,algorithm:state.algorithm}));
         state.context=result; highlightSelection(); renderContext();
       } catch(error) { if(error.name!=="AbortError"&&epoch===state.epoch) { notice(error.message); $("selection-info").textContent=`#${id} · failed`; } }
     }
@@ -177,18 +191,41 @@
       const result=state.context; if(!result) return;
       const sizes=result.events.map(event=>characterCount(event.text));
       const totalCharacters=sizes.reduce((total,size)=>total+size,0);
-      const recent=result.messages.filter(message=>message.selection!=="parent").length; const parents=result.messages.length-recent;
+      const recent=result.messages.filter(message=>["current","recent"].includes(message.selection)).length; const parents=result.messages.filter(message=>message.selection==="parent").length;
+      const added=result.messages.filter(message=>message.selection_depth>0).length;
       $("selection-info").textContent=`#${result.message_id}`;
-      $("selection-info").title=`Chat ${result.key[0]}${result.key[1]===null?" · whole chat":" · topic "+result.key[1]} · ${result.parameters.limit} recent · ${result.parameters.parent_hops} hops · ${result.elapsed_ms} ms`;
+      $("selection-info").title=`Chat ${result.key[0]}${result.key[1]===null?" · whole chat":" · topic "+result.key[1]} · ${result.parameters.algorithm} · ${result.parameters.limit} recent · ${result.parameters.parent_hops} hops · ${result.elapsed_ms} ms`;
       const stats=$("stats"); stats.replaceChildren(); for(const [count,label] of [[totalCharacters,"chars"],[result.messages.length,"messages"],[recent,"recent"],[parents,"parents"],[result.events.length,"events"]]) { const part=element("span"); part.append(element("strong","",count.toLocaleString("en-US")),document.createTextNode(" "+label)); if(label==="chars") { part.id="total-characters"; part.title="Characters in all formatted event text, including spaces, newlines and shared metadata."; } stats.append(part); }
       const fragment=document.createDocumentFragment();
+      if(result.parameters.algorithm==="recursive") {
+        const steps=element("details","expansion-steps");
+        steps.append(element("summary","",`${result.expansion_steps.length-1} expansion step(s) · +${added} messages beyond the old algorithm`));
+        for(const step of result.expansion_steps) {
+          const row=element("div","expansion-step");
+          const anchor=element("button","event-source","#"+step.anchor_id+" ↗"); anchor.dataset.reveal=step.anchor_id;
+          row.append(element("strong","",step.depth?`Step ${step.depth}`:"Initial"),element("span","",step.depth?"Request":""),anchor);
+          if(step.answer_id) { const answer=element("button","event-source","#"+step.answer_id+" ↗"); answer.dataset.reveal=step.answer_id; row.append(element("span","","→ answer"),answer); }
+          row.append(element("span","",`${step.window_size} recent + ${step.parent_hops} hops · ${step.added_ids.length} added`));
+          steps.append(row);
+        }
+        fragment.append(steps);
+        if(result.prefix.request_id!==null) {
+          const prefix=element("div","expansion-steps");
+          const previous=element("button","event-source","#"+result.prefix.request_id+" ↗"); previous.dataset.reveal=result.prefix.request_id;
+          prefix.append(document.createTextNode(`Restored prefix: ${result.prefix.event_count} events · ${result.prefix.message_count} messages · ${result.prefix.text_characters.toLocaleString("en-US")} chars from request `),previous,element("div","", "Previous date, interlocutor and reply-cut markers are preserved. New records append after this prefix; older parents can appear in the appended block."));
+          fragment.append(prefix);
+        }
+        if(result.unresolved_answer_ids.length) fragment.append(element("div","cut-note",`${result.unresolved_answer_ids.length} earlier bot message(s) skipped: their triggering requests could not be uniquely verified from delivery logs. Reply targets are not used as substitutes.`));
+      }
       if(result.truncated_threads.length) fragment.append(element("div","cut-note",`${result.truncated_threads.length} reply chain(s) extend past the ${result.parameters.parent_hops}-hop limit. Navigation metadata appears in the boundary messages.`));
       if(result.image_count) fragment.append(element("div","cut-note",`${result.image_count} ImageInput placeholder(s) follow their source messages. Placement uses the bot's event builder; image bytes are not downloaded. Runtime availability, decoding and the byte budget can produce omission notes instead.`));
-      const kinds=new Map(result.messages.map(message=>[message.id,message.selection]));
+      const selections=new Map(result.messages.map(message=>[message.id,message]));
       for(const [index,event] of result.events.entries()) {
-        const card=element("div","event "+event.role+" "+(kinds.get(event.message_id)||""));
+        const selection=selections.get(event.message_id);
+        const card=element("div","event "+event.role+" "+(selection?.selection||""));
         const head=element("div","event-head"); const size=element("span","event-size",sizes[index].toLocaleString("en-US")+" chars"); size.title="Characters in this event's formatted text, including spaces and newlines.";
         head.append(element("span","role "+event.role,event.role),element("span","event-kind",event.type),size);
+        if(selection?.selection_depth) head.append(element("span","step-label",`Step ${selection.selection_depth}`));
         if(event.message_id!==null) { const source=element("button","event-source","#"+event.message_id+" ↗"); source.dataset.reveal=event.message_id; head.append(source); } else head.append(element("span","event-label","CHAT"));
         card.append(head);
         for(const part of event.parts) {
@@ -211,10 +248,17 @@
       item.scrollIntoView({block:"center"}); item.classList.add("flash"); setTimeout(()=>item.classList.remove("flash"),1200); if(select) await selectMessage(id);
     }
     $("older").addEventListener("click",()=>loadMessages({older:true}));
+    function setAlgorithm(algorithm) {
+      state.algorithm=algorithm;
+      for(const name of ["classic","recursive"]) $(name+"-algorithm").setAttribute("aria-pressed",String(name===algorithm));
+      $("algorithm-description").textContent=algorithm==="recursive"?`Replay earlier requests: ${state.limit} + ${state.parentHops} hops at every level · preserve prefix, append new records`:"Recent window + reply parents";
+    }
+    for(const name of ["classic","recursive"]) $(name+"-algorithm").addEventListener("click",()=>{ if(state.algorithm===name) return; setAlgorithm(name); if(state.current!==null) selectMessage(state.current); });
     for(const id of ["context-limit","context-hops"]) $(id).addEventListener("input",()=>{
       clearTimeout(parameterTimer);
       if(!$("context-limit").checkValidity()||!$("context-hops").checkValidity()) return;
       state.limit=$("context-limit").valueAsNumber; state.parentHops=$("context-hops").valueAsNumber;
+      setAlgorithm(state.algorithm);
       if(state.current!==null) { state.contextRequest?.abort(); parameterTimer=setTimeout(()=>selectMessage(state.current),180); }
     });
     $("messages").addEventListener("click",event=>{ const quote=event.target.closest("[data-jump]"); if(quote) { revealMessage(Number(quote.dataset.jump),true); return; } const item=event.target.closest(".message"); if(item) selectMessage(Number(item.dataset.id)); });
@@ -226,9 +270,10 @@
       try { const data=await api("/api/chats"); state.timezone=data.timezone;
         if(!data.chats.length) { $("messages").replaceChildren(element("div","empty","No numerically bound group messages in PostgreSQL yet.")); return; }
         const query=new URLSearchParams(location.search);
-        state.chat=query.has("chat_id")?data.chats.find(chat=>String(chat.chat_id)===query.get("chat_id")):data.chats.reduce((largest,chat)=>chat.message_count>largest.message_count?chat:largest);
+        state.chat=query.has("chat_id")?data.chats.find(chat=>String(chat.chat_id)===query.get("chat_id")):(data.chats.find(chat=>String(chat.chat_id)==="-1003576522523")||data.chats.reduce((largest,chat)=>chat.message_count>largest.message_count?chat:largest));
         if(!state.chat) throw new Error("This group chat is not saved in PostgreSQL.");
         state.topic=query.get("topic_id")||"";
+        setAlgorithm(query.get("algorithm")==="recursive"?"recursive":"classic");
         $("chat-title").textContent=state.chat.title||"Unnamed group"; $("chat-title").title=`${state.chat.message_count.toLocaleString()} saved messages · ${state.timezone}`;
         await loadMessages();
         if(query.has("message_id")) await revealMessage(Number(query.get("message_id")),true);

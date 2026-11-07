@@ -10,9 +10,11 @@ services:
       BOT_TIMEZONE: ${BOT_TIMEZONE:-Europe/Moscow}
       PYTHONPATH: /app/src
       PYTHONDONTWRITEBYTECODE: "1"
+      PREVIEW_LOG_DIR: /app/logs
     volumes:
       - ./src:/app/src:ro
       - ./preview:/app/preview:ro
+      - ./var/logs:/app/logs:ro
     ports:
       - "127.0.0.1:8765:8765"
     healthcheck:

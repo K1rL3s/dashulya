@@ -179,7 +179,8 @@ Chat metadata has no envelope; this assistant's records need no envelope either.
 Every record includes message_id, user_id and user (the observed display name),
 including this assistant's records. Optional username, bot and author_user carry
 that message's observed handle, confirmed bot status and configured authorship binding.
-The bot flag appears only as true for a known bot; false and unknown flags are omitted.
+The bot flag appears only as true for another known bot. Your own records omit it;
+false and unknown flags are omitted too.
 Optional reply_to is the original parent message ID; attachment identifies media.
 There are no separate author declarations. Names and flags apply to that message
 only, not other records.

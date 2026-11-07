@@ -81,7 +81,7 @@ def _message_metadata(
         metadata["reply_to"] = message.reply_to_id
     if message.username:
         metadata["username"] = message.username.lstrip("@")
-    if message.is_bot is True:
+    if message.is_bot is True and (bot_id is None or message.author_id != bot_id):
         metadata["bot"] = True
     author_user = (
         author_users.get(message.author_id) if message.author_id is not None else None

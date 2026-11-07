@@ -156,6 +156,7 @@ class TestToolMessageFormat:
         assert '"user_id":42,"user":"Alice","username":"alice"' in block["text"]
         assert "User 123:" not in block["text"]
         assert group_records(block["text"])[1]["role"] == "assistant"
+        assert "bot" not in group_records(block["text"])[1]
         first_record = block["text"].split("\n===\n")[1]
         header = first_record.split("\n<external_input", 1)[0]
         assert "26 October 2026 (Monday)" in header

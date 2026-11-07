@@ -10,8 +10,9 @@ From the project root, with the existing Compose PostgreSQL service running:
 just preview
 ```
 
-Open <http://localhost:8765>. The chat with the most saved messages opens
-automatically. Click any message on the left; the right pane displays the
+Open <http://localhost:8765>. Ostrikov's chat (`-1003576522523`) opens when saved;
+otherwise the chat with the most saved messages opens automatically.
+Click any message on the left; the right pane displays the
 actual formatted text of each AG2 event. Selection
 colors distinguish the current request, recent messages and added reply parents.
 Use **Load older messages** to walk back through history. Reply references and
@@ -31,8 +32,9 @@ Each event shows a local day heading where needed, then a time/JSON metadata
 line. Every message includes `message_id`, `user_id` and `user` (the display
 name), including the bot's own messages. Optional `username`, `bot` and
 `author_user` preserve observed handles, known bot flags and configured authorship
-bindings. Only `bot:true` is emitted for known bots; false and unknown flags are
-omitted. There are no separate author declarations. Optional `reply_to` holds the
+bindings. Only `bot:true` is emitted for other known bots; omit it for this
+assistant and false or unknown bot status. There are no separate author
+declarations. Optional `reply_to` holds the
 original parent message ID and is omitted for messages without a parent.
 All of that metadata precedes `external_input`;
 only the source text and attached-media notes are inside the envelope. The shared
@@ -49,6 +51,70 @@ bot. These controls change only the preview request, not the bot's settings.
 Selection colors, counts, truncated-chain notes and both event views update
 together.
 
+The **Old / Recursive** toggle compares two selection algorithms for the same
+message. **Old** uses the real bot's selection unchanged. **Recursive** is a
+preview-only experiment:
+
+1. Build the usual recent window (20 messages including the request) and five
+   reply-parent hops from every seed.
+2. Find the earliest previous answer authored by Dashulya's configured numeric
+   bot ID anywhere in that selection, including added parents. Resolve the
+   incoming request that triggered that answer. Rebuild its full context using
+   the same 20-message window and five parent hops.
+3. Find the earliest still older Dashulya answer in this added window and its
+   parents. Again anchor at its triggering request and apply exactly the same
+   algorithm, until no earlier verifiable Dashulya answer remains.
+
+An anchor must move strictly backwards; the current request, another bot's
+messages and unknown authors cannot start expansion. All steps stay in the
+selected chat/topic. The controls adjust the recent count and hop count at every
+level. The old shrinking 20/10/5 windows are replaced with the same 20/5 selection
+at every request (or the values currently selected in the controls).
+
+Restore the earliest request first. Each newer request keeps the entire earlier
+recursive input as its prefix and appends only originals not already present,
+in that window's order. Do not globally sort the union: a newly discovered older
+parent would otherwise be inserted into the cached prefix. Such parents append
+in the new block with their original date/time. There is one event per original,
+plus any adjacent assistant-image events, and one chat header from the oldest
+restored block. The current request remains last.
+
+Render each appended block independently. Earlier date headings, interlocutor
+markers, image placeholders and truncated-chain metadata stay unchanged;
+the final block supplies the new request's interlocutor marker. A previous
+truncated-chain marker may describe an ancestor supplied later in the suffix.
+This is intentional: removing it would change the reused prefix. The **Restored
+prefix** note shows the previous request ID, event/message counts and text size.
+
+The preview verifies triggers against local generation and delivery logs:
+rendered output text must match the saved answer within its delivery interval,
+with exactly one originating request. A reply target is not a trigger: Dashulya
+can choose another recipient or send an unthreaded follow-up. Missing or ambiguous
+matches, including service messages, are skipped and counted in the viewer.
+The next verifiable earlier answer may still expand the context. Compose mounts
+`var/logs` read-only; host startup uses that directory by default, or
+`PREVIEW_LOG_DIR` when set. Log changes refresh the cached matching index.
+
+The content of an earlier recursive preview is reproduced as the newer preview's
+full prefix when data, logs, formatting settings and selection parameters stay
+the same. Compare roles and ordered content parts, not AG2 event UUIDs/timestamps.
+This is a reconstruction from current originals, not an archived model payload.
+Source edits or changing trigger-log coverage can change reconstruction. Actual
+provider cache hits also depend on unchanged system prompts, tools and native
+media; this viewer does not download image bytes or reproduce tool traces.
+It makes no paid model calls and does not report provider cache-hit metrics.
+
+Blue selection marks earlier chronological windows. Added events and message
+labels show their expansion step; **expansion steps** lists each triggering
+request, its answer and how many new messages it contributed. Character counts, image placeholders and JSON
+reflect the selected algorithm. Recursive selection can grow substantially in
+a dense bot conversation; inspect the displayed size before adopting a policy.
+This toggle does not change the running Telegram bot.
+
+Open the image incident directly:
+<http://localhost:8765/?chat_id=-1003576522523&message_id=113856&algorithm=recursive>.
+Use the toggle to compare which earlier image originals return to the context.
+
 The context total and each event card show character counts of the formatted
 text, including spaces, newlines, JSON punctuation and shared metadata. Counts
 use Unicode code points, so supplementary characters such as emoji are not
@@ -62,6 +128,8 @@ General is topic 1. The database does
 not retain Telegram's `is_forum` flag, so the preview does not guess it from old
 thread IDs. Only numerically bound group collections are shown.
 Add `message_id` to open and select a saved message directly.
+Set `algorithm=recursive` to select the experiment; the default is `classic`.
+Switching algorithms preserves the selected message and updates its shareable URL.
 
 The preview reads current saved originals, not historical edit versions. It
 shows the message context and AG2 event parts, excluding global agent prompts,
