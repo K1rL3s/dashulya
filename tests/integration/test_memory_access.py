@@ -764,7 +764,7 @@ class TestMemoryAccessIntegration:
             for schema in config.calls[0].tools
             if isinstance(schema, FunctionToolSchema)
         ]
-        assert len(schemas) == 5
+        assert len(schemas) == 6
         for name in (
             "is_private",
             "user_id",

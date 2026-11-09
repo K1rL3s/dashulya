@@ -312,16 +312,18 @@ async def _rows(
         )
         raise MemoryInputError(message)
     rows: list[dict[str, Any]] = []
-    truncated = False
+    reasons: set[str] = set()
+    cells: list[dict[str, Any]] = []
     remaining = max_chars
     for _ in range(MAX_ROWS + 1):
         row = await cursor.fetchone()
         if row is None:
             break
         if len(rows) == MAX_ROWS:
-            truncated = True
+            reasons.add("rows")
             break
         bounded = {}
+        row_cells = []
         for key, item in row.items():
             value = _value(item)
             encoded = (
@@ -329,19 +331,37 @@ async def _rows(
             )
             if len(encoded) > MAX_CELL_CHARS:
                 value = encoded[:MAX_CELL_CHARS]
-                truncated = True
+                row_cells.append({
+                    "row_index": len(rows) + 1,
+                    "column": key,
+                    "text_length": len(encoded),
+                    "returned_chars": MAX_CELL_CHARS,
+                    "next_offset": MAX_CELL_CHARS,
+                })
             bounded[key] = value
         size = len(json.dumps(bounded, ensure_ascii=False))
         if size > remaining:
-            truncated = True
+            reasons.add("result_chars")
             break
         rows.append(bounded)
+        if row_cells:
+            reasons.add("cell_chars")
+            cells.extend(row_cells)
         remaining -= size
     return {
         "columns": columns,
         "rows": rows,
         "row_count": len(rows),
-        "truncated": truncated,
+        "truncated": bool(reasons),
+        "truncation_reasons": sorted(reasons),
+        "truncated_cells": cells,
+        "next_row_offset": len(rows) if reasons & {"rows", "result_chars"} else None,
+        "limits": {
+            "rows": MAX_ROWS,
+            "cell_chars": MAX_CELL_CHARS,
+            "result_chars": max_chars,
+            "batch_chars": MAX_RESULT_CHARS,
+        },
         "coverage": {
             "complete": False,
             "notice": "Only authorized saved originals through the request cutoff are available; missing history is not fetched from Telegram.",
@@ -417,6 +437,7 @@ async def _one(
             "duration_ms": round((perf_counter() - started) * 1000),
             "row_count": result["row_count"],
             "truncated": result["truncated"],
+            "truncation_reasons": result["truncation_reasons"],
         },
     )
     return result

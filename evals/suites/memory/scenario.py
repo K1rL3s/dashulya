@@ -36,6 +36,7 @@ from dashulya.ai.embeddings import MemoryEmbeddings
 from dashulya.ai.message_format import MessageFormatter
 from dashulya.ai.tools.history import chat_history
 from dashulya.ai.tools.memory import search_memory
+from dashulya.ai.tools.sources import SourceReadTurn, read_sources
 from dashulya.database import Database
 from dashulya.domain.memory import (
     ChatMemoryService,
@@ -94,6 +95,10 @@ class ScenarioTools(Provider):
     scope = AG2Scope.APP
     service = from_context(ChatMemoryService)
     formatter = from_context(MessageFormatter)
+
+    @provide(scope=AG2Scope.SESSION)
+    def source_read_turn(self) -> SourceReadTurn:  # ruff: ignore[no-self-use] -- Dishka provider.
+        return SourceReadTurn()
 
     @provide(scope=AG2Scope.SESSION)
     def access(self, context: Context) -> MemoryAccess:  # ruff: ignore[no-self-use] -- Dishka provider.
@@ -158,6 +163,8 @@ def references(value: Any) -> set[str]:
     if isinstance(value, str):
         return {value} if value.startswith(("source:", "https://t.me/")) else set()
     if isinstance(value, dict):
+        if value.get("status") == "not_found":
+            return set()
         return set().union(
             *(
                 references([key, child])
@@ -439,7 +446,7 @@ async def replay(
     tracking = TrackingConfig(config)
     agent = create_reply_agent(
         tracking,
-        tools=[search_memory, chat_history],
+        tools=[search_memory, chat_history, read_sources],
         middleware=[
             Middleware(DishkaAsyncMiddleware, container=container),
             Middleware(DiagnosticTrace),

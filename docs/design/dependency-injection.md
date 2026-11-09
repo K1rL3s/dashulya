@@ -24,7 +24,8 @@ ai/
     models.py            Reply/classification model policy
     factory.py           Agent identities, prompts, schemas, and construction
   tools/memory.py        Bounded recall over the async backend interface
-  tools/history.py       Canonical original reads, counts and pagination
+  tools/history.py       Scoped SQL, counts and legacy single-source media
+  tools/sources.py       Selected originals, reply pages and explicit media
   embeddings.py          Embedding provider/model policy
   message_format.py      Per-message author metadata, calendar headings and records
   dialogue.py            Reply context, conversation history, turn locking, and reset
@@ -154,7 +155,15 @@ ephemeral ID without changing memory authority or the original send-time cutoff.
 The middleware records raw model output before validation,
 its message count when readable, and the number of function tool calls. Input conversation
 bodies and tool results stay excluded; credential redaction also covers
-model output and explicitly logged history SQL. Other tool arguments stay excluded.
+model output and explicitly logged history SQL. Other tool arguments are now
+logged as bounded JSON with sensitive field names redacted; the formatter also
+redacts configured credentials. Invalid argument JSON is flagged without logging
+the malformed payload. Tool result bodies remain excluded; completion events
+report their character count, identifiable source count and newly seen source count.
+Canonical source references and SQL rows with message_id plus a known collection
+or trusted group origin are counted; rows without such identity are not counted.
+Model events carry an index and input-character/prompt-token growth between calls.
+These are request-local diagnostics, not coverage or factual-relevance metrics.
 History-call events include the SQL list and call ID. The SQL adapter logs
 individual query indexes, batch IDs, trusted request IDs, timings, outcomes and
 returned row counts without selected data. Tool failures include full structured
@@ -181,7 +190,7 @@ or a model retry. Generated/delivered events record message counts; delivery
 also records confirmed Telegram chunks and distinguishes rendering from send
 failures.
 
-Both model-facing memory tools omit the `chat` selector and keep their scope
+The model-facing memory tools omit the `chat` selector and keep their scope
 bound through `MemoryAccess`. A single-row result within a `chat_history(sql=[...])`
 batch can resolve the selected original's private file references through `HistoryReader.original()`, which
 reuses the scoped canonical reader and cutoff. It returns the original's image
@@ -207,6 +216,13 @@ tool-only turn to finish silently and suppressing retries of any unconfirmed
 target. The factory opens a Dishka tool request to resolve the
 application-scoped adapter; the returned object holds no request-scoped resource.
 No mutable chat identity lives on the shared agent or service.
+
+`SourceReadTurn` is provided at `AG2Scope.SESSION` for each ask. The selected-source
+tool serializes overlapping calls through that state and tracks supplied text
+ranges without modifying earlier model events. Its `HistoryReader.read_sources()`
+returns domain `SourcePage` objects; the PostgreSQL adapter applies the same
+trusted visibility predicate as canonical reads. Existing `HistoryImageTurn`
+handles optional media without rereading all originals.
 Known Telegram rejection descriptions become specific `reason` codes and fixed
 English `message` explanations with recovery guidance. Invalid reactions, reaction
 limits, missing messages/chats, membership and permission failures stay distinct;
@@ -327,7 +343,7 @@ choices use their own text/silence/reaction/no-answer log reasons. The Telegram
 handler injects `MessageReactions` for direct classifier-selected reactions;
 these do not enter `Dialogue` or start a reply-agent session.
 
-The reply agent always registers `search_memory` and `chat_history` with `@tool`
+The reply agent always registers `search_memory`, `chat_history` and `read_sources` with `@tool`
 and standard `dishka_ag2.inject`. Their `FromDishka[MemoryBackend]` and
 `FromDishka[HistoryReader]` and `FromDishka[MessageFormatter]` parameters stay outside
 the model-facing schema.

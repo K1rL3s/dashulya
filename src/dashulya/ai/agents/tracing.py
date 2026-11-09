@@ -3,9 +3,11 @@
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from time import perf_counter
-from typing import Annotated, override
+from typing import Annotated, Any, override
 
 from ag2 import Context, Inject, observer
 from ag2.events import (
@@ -26,7 +28,7 @@ from ag2.middleware.base import BaseMiddleware, LLMCall, ToolExecution, ToolResu
 from fast_depends import inject
 from pydantic import ValidationError
 
-from dashulya.domain.memory import MemoryAccess, MemoryInputError
+from dashulya.domain.memory import MemoryAccess, MemoryInputError, message_source_id
 from dashulya.domain.messages import ReplyRequest
 from dashulya.observability import exception_fields, reply_log_fields
 
@@ -140,7 +142,97 @@ def _history_sql_fields(event: ToolCallEvent) -> dict[str, object]:
     return {}
 
 
+def _argument_fields(event: ToolCallEvent) -> dict[str, object]:
+    if event.name == "chat_history":
+        return _history_sql_fields(event)
+    try:
+        arguments = event.serialized_arguments
+    except AttributeError, ValueError, TypeError:
+        return {"tool_arguments_invalid": True}
+
+    def redact(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: "<REDACTED>"
+                if re.search(
+                    r"(?i)password|secret|token|api.?key|authorization|credential|headers",
+                    key,
+                )
+                else redact(item)
+                for key, item in value.items()
+            }
+        return [redact(item) for item in value] if isinstance(value, list) else value
+
+    safe = redact(arguments)
+    encoded = json.dumps(safe, ensure_ascii=False)
+    return {
+        "tool_arguments": safe if len(encoded) <= 16000 else encoded[:16000],
+        "tool_arguments_truncated": len(encoded) > 16000,
+    }
+
+
+def _result_sources(value: Any, chat_id: int | None = None) -> set[str]:
+    if isinstance(value, str):
+        return {value} if re.fullmatch(r"source:[0-9a-f]{24}:[0-9]+", value) else set()
+    if isinstance(value, list):
+        return set().union(*(_result_sources(item, chat_id) for item in value))
+    if not isinstance(value, dict) or value.get("status") == "not_found":
+        return set()
+    sources: set[str] = set()
+    columns = value.get("columns")
+    if isinstance(columns, list) and "message_id" in columns:
+        for row in value.get("rows", []):
+            cells = row if isinstance(row, dict) else dict(zip(columns, row, strict=True))
+            number, collection = cells.get("message_id"), cells.get("chat")
+            origin = cells.get("chat_id", chat_id)
+            if not isinstance(collection, str) and isinstance(origin, int) and origin < 0:
+                collection = f"telegram:{origin}"
+            if isinstance(collection, str) and type(number) is int:
+                sources.add(message_source_id(collection, number))
+    return sources | set().union(
+        *(
+            _result_sources(key, chat_id) | _result_sources(item, chat_id)
+            for key, item in value.items()
+            if key not in {"text", "content", "query", "snippet", "sql"}
+        )
+    )
+
+
 class ReplyTrace(BaseMiddleware):
+    @override
+    def __init__(self, event: BaseEvent, context: Context) -> None:
+        super().__init__(event, context)
+        self._sources: set[str] = set()
+        self._model_calls = 0
+        self._input_chars: int | None = None
+        self._prompt_tokens: float | None = None
+
+    def _result_fields(self, result: ToolResultType) -> dict[str, object]:
+        if not isinstance(result, (ToolResultEvent, ToolErrorEvent)):
+            return {}
+        texts = [
+            part.content for part in result.result.parts if isinstance(part, TextInput)
+        ]
+        sources: set[str] = set()
+        for text in texts:
+            payload = text
+            if payload.startswith('<external_input source="'):
+                payload = payload.partition("\n")[2].rsplit("\n</external_input>", 1)[0]
+            with suppress(ValueError, TypeError, RecursionError):
+                chat = _request(__ctx__=self.context).get("chat_id")
+                sources.update(
+                    _result_sources(
+                        json.loads(payload), chat if isinstance(chat, int) else None
+                    )
+                )
+        fields: dict[str, object] = {
+            "result_chars": sum(len(text) for text in texts),
+            "source_count": len(sources),
+            "new_source_count": len(sources - self._sources),
+        }
+        self._sources.update(sources)
+        return fields
+
     @override
     async def on_llm_call(
         self, call_next: LLMCall, events: Sequence[BaseEvent], context: Context
@@ -164,6 +256,15 @@ class ReplyTrace(BaseMiddleware):
                 for part in parts
             ),
         )
+        self._model_calls += 1
+        fields["model_call_index"] = self._model_calls
+        current_chars = sum(
+            len(part.content) for part in parts if isinstance(part, TextInput)
+        )
+        fields["input_chars_delta"] = (
+            current_chars - self._input_chars if self._input_chars is not None else None
+        )
+        self._input_chars = current_chars
         started = perf_counter()
         logger.info("AI model call started", extra=fields)
         try:
@@ -185,6 +286,12 @@ class ReplyTrace(BaseMiddleware):
             raise
         cached = response.usage.cache_read_input_tokens
         prompt = response.usage.prompt_tokens
+        prompt_delta = (
+            prompt - self._prompt_tokens
+            if prompt is not None and self._prompt_tokens is not None
+            else None
+        )
+        self._prompt_tokens = prompt
         logger.info(
             "AI model call completed",
             extra={
@@ -192,6 +299,7 @@ class ReplyTrace(BaseMiddleware):
                 **_output_fields(response),
                 "model": response.model,
                 "prompt_tokens": response.usage.prompt_tokens,
+                "prompt_tokens_delta": prompt_delta,
                 "completion_tokens": response.usage.completion_tokens,
                 "thinking_tokens": response.usage.thinking_tokens,
                 "cached_input_tokens": cached,
@@ -211,7 +319,7 @@ class ReplyTrace(BaseMiddleware):
             **_request(__ctx__=context),
             "tool_name": event.name,
             "tool_call_id": event.id,
-            **_history_sql_fields(event),
+            **_argument_fields(event),
         }
         started = perf_counter()
         logger.info("AI tool call started", extra=fields)
@@ -241,6 +349,7 @@ class ReplyTrace(BaseMiddleware):
                 },
             )
             raise
+        fields.update(self._result_fields(result))
         if isinstance(result, ToolErrorEvent):
             extra = {
                 **_outcome_fields(started, fields, "error"),
@@ -250,7 +359,12 @@ class ReplyTrace(BaseMiddleware):
                 logger.warning("AI tool call completed", extra=extra)
             else:
                 logger.error("AI tool call completed", extra=extra)
-            if event.name in {"search_memory", "chat_history", "retry_image"}:
+            if event.name in {
+                "search_memory",
+                "chat_history",
+                "read_sources",
+                "retry_image",
+            }:
                 return _memory_failure(event, result.error)
         else:
             logger.info(

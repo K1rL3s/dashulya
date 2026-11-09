@@ -147,13 +147,13 @@ class TestAgentTracing:
         assert event["tool_call_count"] == 1
         assert "PRIVATE QUERY" not in json.dumps(event)
 
-    async def test_success_and_tool_error_keep_same_call_id_without_arguments_or_result(
+    async def test_success_and_tool_error_keep_same_call_id_without_result(
         self,
         caplog: pytest.LogCaptureFixture,
         subtests: pytest.Subtests,
     ) -> None:
         call = ToolCallEvent(
-            "search_memory", id="call-1", arguments='{"query":"PRIVATE QUERY"}'
+            "search_memory", id="call-1", arguments='{"query":"PUBLIC QUERY"}'
         )
         for result, outcome in (
             (ToolResultEvent.from_call(call, "PRIVATE RESULT"), "ok"),
@@ -196,6 +196,7 @@ class TestAgentTracing:
                     level="ERROR" if outcome == "error" else "INFO",
                 ),
             ]
+            assert events[0]["tool_arguments"] == {"query": "PUBLIC QUERY"}
             assert "PRIVATE" not in json.dumps(events)
 
     async def test_history_batch_sql_is_correlated_and_credentials_are_redacted(
@@ -226,6 +227,80 @@ class TestAgentTracing:
             assert record["message_id"] == 7
             assert record["sql"] == [queries[0], "SELECT '<REDACTED>' AS value"]
         assert "PRIVATE RESULT" not in json.dumps(records)
+
+    async def test_search_diagnostics_record_arguments_new_sources_and_context_growth(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        source = "source:0123456789abcdef01234567:17"
+        call = ToolCallEvent(
+            "search_memory",
+            arguments=json.dumps({
+                "query": "Japanese 日本語 fixture-credential",
+                "api_key": "HIDDEN KEY",  # pragma: allowlist secret -- Synthetic redaction fixture.
+            }),
+        )
+        result = ToolResultEvent.from_call(
+            call,
+            json.dumps({
+                "message_blocks": [
+                    {"sources": {source: {"message_id": 17}}, "text": "PRIVATE RESULT"}
+                ],
+            }),
+        )
+        with caplog.at_level("INFO", logger="dashulya.ai.agents.tracing"):
+            for _ in range(2):
+                await self.trace.on_tool_execution(
+                    AsyncMock(return_value=result), call, self.context
+                )
+            table_call = ToolCallEvent(
+                "chat_history",
+                arguments='{"sql":["SELECT message_id,text FROM messages"]}',
+            )
+            table_result = ToolResultEvent.from_call(
+                table_call,
+                json.dumps({
+                    "results": [
+                        {
+                            "columns": ["message_id", "text"],
+                            "rows": [[18, "PRIVATE RESULT"]],
+                        }
+                    ],
+                }),
+            )
+            for _ in range(2):
+                await self.trace.on_tool_execution(
+                    AsyncMock(return_value=table_result), table_call, self.context
+                )
+            await self.trace.on_llm_call(
+                AsyncMock(return_value=ModelResponse(usage=Usage(prompt_tokens=100))),
+                [self.event],
+                self.context,
+            )
+            await self.trace.on_llm_call(
+                AsyncMock(return_value=ModelResponse(usage=Usage(prompt_tokens=130))),
+                [self.event, result],
+                self.context,
+            )
+        records = [
+            json.loads(JsonLogFormatter(secrets=("fixture-credential",)).format(r))
+            for r in caplog.records
+        ]
+        tools = [r for r in records if r["message"] == "AI tool call completed"]
+        assert tools[0]["tool_arguments"] == {
+            "query": "Japanese 日本語 <REDACTED>",
+            "api_key": "<REDACTED>",
+        }
+        assert [r["new_source_count"] for r in tools] == [1, 0, 1, 0]
+        assert [r["source_count"] for r in tools] == [1, 1, 1, 1]
+        assert tools[0]["result_chars"] > 0
+        models = [r for r in records if r["message"] == "AI model call completed"]
+        assert [r["model_call_index"] for r in models] == [1, 2]
+        assert models[1]["prompt_tokens_delta"] == 30
+        part = result.result.parts[0]
+        assert isinstance(part, TextInput)
+        assert models[1]["input_chars_delta"] == len(part.content)
+        assert "PRIVATE RESULT" not in json.dumps(records)
+        assert "HIDDEN KEY" not in json.dumps(records)
 
     async def test_tool_exception_and_cancellation_are_traced_and_propagated(
         self,

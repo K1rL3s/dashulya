@@ -29,6 +29,7 @@ from dashulya.domain.memory import (
     HistoryReader,
     MemoryAccess,
     OriginalMessage,
+    SourcePage,
 )
 from dashulya.domain.messages import ImageAttachment, ImageFile, ReplyBatch, ReplyRequest
 from dashulya.main import create_container
@@ -101,6 +102,7 @@ class TestHistoryImages:
             self.store, MemoryAccess(chat_id, chat_id > 0, before=self.now, before_id=99)
         )
         reader = AsyncMock(spec=HistoryReader)
+        self.reader = reader
         reader.original.side_effect = canonical.original
 
         async def query(sql: list[str]) -> dict[str, Any]:
@@ -195,6 +197,38 @@ class TestHistoryImages:
             assert data["image"]["untrusted"] is True
             assert "saved-photo" not in json.dumps(data)
         self.metadata.assert_awaited_once_with("saved-photo", request_timeout=10)
+
+    async def test_selected_source_batch_loads_images_and_reuses_shared_budget(
+        self,
+    ) -> None:
+        other = replace(self.source, message_id=2, image_file=ImageFile("other-photo"))
+        call = ToolCallEvent(
+            "read_sources",
+            arguments=json.dumps({
+                "source_ids": [self.source.source_id, other.source_id],
+                "include_images": True,
+            }),
+        )
+        dialogue = await self.create(call, call, reply_json("Both photos"))
+        self.reader.read_sources.return_value = (
+            SourcePage(self.source.source_id, True, (self.source,)),
+            SourcePage(other.source_id, True, (other,)),
+        )
+        first, second = self.results(await self.reply(dialogue))
+        assert [p.data for p in first.result.parts if isinstance(p, BinaryInput)] == [
+            self.image,
+            self.image,
+        ]
+        assert [image["status"] for image in self.data(first)["images"]] == [
+            "loaded",
+            "loaded",
+        ]
+        assert len(second.result.parts) == 1
+        assert [image["status"] for image in self.data(second)["images"]] == [
+            "already_supplied",
+            "already_supplied",
+        ]
+        assert "saved-photo" not in str(self.data(first))
 
     async def test_repeated_read_in_one_turn_does_not_duplicate_image(self) -> None:
         dialogue = await self.create(self.read(), self.read(), reply_json("Seen"))

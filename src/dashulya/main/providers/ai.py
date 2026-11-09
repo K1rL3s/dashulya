@@ -22,6 +22,7 @@ from dashulya.ai.message_format import MessageFormatter
 from dashulya.ai.tools.history import chat_history, retry_image
 from dashulya.ai.tools.memory import search_memory
 from dashulya.ai.tools.reactions import set_reaction
+from dashulya.ai.tools.sources import SourceReadTurn, read_sources
 from dashulya.ai.tools.web import create_web_tools
 from dashulya.ai.tools.youtube import YouTubeTranscripts, youtube_transcript
 from dashulya.domain.memory import (
@@ -101,6 +102,7 @@ class AgentProvider(Provider):
             tools=[
                 search_memory,
                 chat_history,
+                read_sources,
                 retry_image,
                 set_reaction,
                 youtube_transcript,
@@ -117,6 +119,10 @@ class AgentProvider(Provider):
             yield YouTubeTranscripts(client)
         finally:
             await client.aclose()
+
+    @provide(scope=AG2Scope.SESSION)
+    def source_read_turn(self) -> SourceReadTurn:
+        return SourceReadTurn()
 
     @provide(scope=AG2Scope.SESSION)
     def memory_access(self, context: Context) -> MemoryAccess:

@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from aiogram.types import TelegramObject
 from dishka import AsyncContainer, Provider, alias, from_context, provide
 from dishka.integrations.aiogram import AiogramMiddlewareData, setup_dishka
@@ -60,7 +61,10 @@ class TelegramProvider(Provider):
 
     @provide
     async def bot(self, settings: Settings) -> AsyncIterator[Bot]:
-        async with Bot(token=settings.bot_token) as bot:
+        async with Bot(
+            token=settings.bot_token,
+            default=DefaultBotProperties(link_preview_is_disabled=True),
+        ) as bot:
             yield bot
 
     @provide

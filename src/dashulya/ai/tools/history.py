@@ -189,41 +189,53 @@ async def _load_image(
     history: HistoryReader,
     image_turn: HistoryImageTurn | None,
 ) -> list[BinaryInput]:
-    attachments = []
     if len(item.get("rows", [])) == 1 and isinstance(
         item["rows"][0].get("source_id"), str
     ):
         source = await history.original(item["rows"][0]["source_id"])
-        if source is not None and source.media_type is not None:
-            if source.image_file is None:
-                item["image"] = {
-                    "source_id": source.source_id,
-                    "status": "no_saved_reference",
-                }
-            elif image_turn is None:
-                item["image"] = {
-                    "source_id": source.source_id,
-                    "status": "loading_unavailable",
-                }
+        if source is not None:
+            return await load_source_image(item, source, image_turn)
+    return []
+
+
+async def load_source_image(
+    item: dict[str, Any],
+    source: OriginalMessage,
+    image_turn: HistoryImageTurn | None,
+) -> list[BinaryInput]:
+    """Attach an already authorized original without rereading the history corpus."""
+    attachments = []
+    if source.media_type is None:
+        return []
+    if source.image_file is None:
+        item["image"] = {
+            "source_id": source.source_id,
+            "status": "no_saved_reference",
+        }
+    elif image_turn is None:
+        item["image"] = {
+            "source_id": source.source_id,
+            "status": "loading_unavailable",
+        }
+    else:
+        loaded = await image_turn.load(source)
+        item["image"] = {
+            "source_id": source.source_id,
+            "status": "already_supplied",
+        }
+        for image in loaded:
+            if isinstance(image, ImageOmission):
+                item["image"]["status"] = image.reason
             else:
-                loaded = await image_turn.load(source)
-                item["image"] = {
-                    "source_id": source.source_id,
-                    "status": "already_supplied",
-                }
-                for image in loaded:
-                    if isinstance(image, ImageOmission):
-                        item["image"]["status"] = image.reason
-                    else:
-                        item["image"].update(
-                            status="loaded",
-                            untrusted=True,
-                            preview_kind=image.preview_kind,
-                            first_frame=image.first_frame,
-                        )
-                        attachments.append(
-                            ImageInput(data=image.data, media_type=image.media_type)
-                        )
+                item["image"].update(
+                    status="loaded",
+                    untrusted=True,
+                    preview_kind=image.preview_kind,
+                    first_frame=image.first_frame,
+                )
+                attachments.append(
+                    ImageInput(data=image.data, media_type=image.media_type)
+                )
     return attachments
 
 
@@ -285,6 +297,7 @@ async def chat_history(
     IDs do not imply other columns. For reply counts, aggregate replies in a CTE
     by chat, topic_id and reply_to_message_id, then join the originals.
 
+    Include source_id in discovery rows so read_sources can read selected originals.
     Batch independent reads in one call. Select only needed columns; use short
     text excerpts for discovery and full text for the chosen originals.
     Use ORDER BY and LIMIT (up to 50 rows, 32 uniquely named columns per query;
@@ -292,12 +305,22 @@ async def chat_history(
     Results follow input order: query_index is 1-based; outcome=ok supplies
     columns and positional row arrays, row_count and truncated; outcome=error
     supplies error.
+    limits gives the actual row/cell and remaining shared result-character caps.
+    truncation_reasons distinguishes rows, result_chars and cell_chars.
+    next_row_offset is the number of rows to skip relative to this query; add it
+    to an existing SQL OFFSET, retaining the same ORDER BY. SQL's own LIMIT may
+    hide further matches: truncated=false describes this query, not all history.
+    truncated_cells identifies 1-based result rows, columns, original text_length
+    and zero-based next_offset; SQL substring starts at next_offset+1.
+    For result_chars, shorten excerpts or split the batch; an unchanged query
+    with next_row_offset=0 cannot advance. Read cell_chars continuations separately.
     Correct and retry failed queries individually. row_count counts returned rows;
     use COUNT(*) for totals. When truncated, page with ID bounds or OFFSET;
     continue long text with substring(text from 12001 for 12000).
 
     To view saved media, select one original's source_id with LIMIT 1;
-    image.status reports whether an image or preview was supplied.
+    image.status reports whether an image or preview was supplied. Prefer
+    read_sources for a batch of selected originals, replies and explicit media.
 
     Examples (replace sample IDs and handles with observed values):
     - Case 1: Read messages between two IDs, including both endpoints.

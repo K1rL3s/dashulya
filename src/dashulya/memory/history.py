@@ -12,8 +12,10 @@ from dashulya.domain.memory import (
     MemoryAccess,
     MemoryInputError,
     OriginalMessage,
+    SourcePage,
     TruncatedThread,
 )
+from dashulya.memory.sources import read_sources
 from dashulya.memory.sql_history import SqlHistory
 from dashulya.memory.store import MessageStore
 
@@ -287,6 +289,23 @@ class CanonicalHistory:
 
     async def sql(self, query: list[str]) -> dict[str, Any]:
         return await SqlHistory(self.store.database, self.access).query(query)
+
+    async def read_sources(
+        self,
+        source_ids: list[str],
+        *,
+        include_replies: bool = False,
+        offset: int = 0,
+        limit: int = 5,
+    ) -> tuple[SourcePage, ...]:
+        return await read_sources(
+            self.store.database,
+            self.access,
+            source_ids,
+            include_replies=include_replies,
+            offset=offset,
+            limit=limit,
+        )
 
     async def originals(self, *, chat: str | None = None) -> list[OriginalMessage]:
         self._chat(chat)

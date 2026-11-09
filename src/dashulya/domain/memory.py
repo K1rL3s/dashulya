@@ -148,6 +148,14 @@ class OriginalMessage:
         }
 
 
+@dataclass(frozen=True)
+class SourcePage:
+    source_id: str
+    found: bool
+    messages: tuple[OriginalMessage, ...] = ()
+    next_offset: int | None = None
+
+
 class MessageRecorder(Protocol):
     async def record(
         self, message: MemoryMessage, *, if_missing: bool = False
@@ -206,6 +214,15 @@ class HistoryReader(Protocol):
     """Read canonical originals within hidden conversation authority."""
 
     async def original(self, source_id: str) -> OriginalMessage | None: ...
+
+    async def read_sources(
+        self,
+        source_ids: list[str],
+        *,
+        include_replies: bool = False,
+        offset: int = 0,
+        limit: int = 5,
+    ) -> tuple[SourcePage, ...]: ...
 
     async def sql(self, query: list[str]) -> dict[str, Any]: ...
 

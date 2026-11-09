@@ -15,7 +15,7 @@ def create_models(*, api_key: str, reply_model: str, decision_model: str) -> Age
             model=reply_model,
             api_key=api_key,
             reasoning={"effort": "high"},
-            timeout=60,
+            timeout=120,
             max_retries=1,
         ),
         decision=OpenAIDecisionsConfig(

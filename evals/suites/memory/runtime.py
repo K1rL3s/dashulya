@@ -35,6 +35,7 @@ from dashulya.ai.embeddings import MemoryEmbeddings
 from dashulya.ai.message_format import MessageFormatter, format_local_time
 from dashulya.ai.tools.history import chat_history
 from dashulya.ai.tools.memory import search_memory
+from dashulya.ai.tools.sources import SourceReadTurn, read_sources
 from dashulya.database import Database
 from dashulya.database.migrate import migrate
 from dashulya.domain.memory import (
@@ -59,6 +60,10 @@ class MemoryToolsProvider(Provider):
     scope = AG2Scope.APP
     service = from_context(ChatMemoryService)
     formatter = from_context(MessageFormatter)
+
+    @provide(scope=AG2Scope.SESSION)
+    def source_read_turn(self) -> SourceReadTurn:  # ruff: ignore[no-self-use] -- Dishka provider.
+        return SourceReadTurn()
 
     @provide(scope=AG2Scope.SESSION)
     def access(self, context: Context) -> MemoryAccess:  # ruff: ignore[no-self-use] -- Dishka provider.
@@ -193,7 +198,7 @@ async def memory_agent(
             await memory.refresh_once()
             yield create_reply_agent(
                 config,
-                tools=[search_memory, chat_history],
+                tools=[search_memory, chat_history, read_sources],
                 middleware=[Middleware(DishkaAsyncMiddleware, container=container)],
             )
         finally:

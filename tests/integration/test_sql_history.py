@@ -211,6 +211,9 @@ async def test_result_limit_and_sql_error_recovery(reader: SqlHistory) -> None:
     result = (await reader.query(["SELECT generate_series(1,1000) AS n"]))["results"][0]
     assert result["row_count"] == 50
     assert result["truncated"] is True
+    assert result["truncation_reasons"] == ["rows"]
+    assert result["next_row_offset"] == 50
+    assert result["limits"]["rows"] == 50
     failed = (await reader.query(["SELECT private_missing_column FROM messages"]))[
         "results"
     ][0]
@@ -219,6 +222,37 @@ async def test_result_limit_and_sql_error_recovery(reader: SqlHistory) -> None:
     assert ((await reader.query(["SELECT count(*) AS n FROM messages"]))["results"][0])[
         "rows"
     ] == [{"n": 4}]
+
+
+async def test_cell_and_batch_truncation_explain_how_to_continue(
+    reader: SqlHistory,
+) -> None:
+    cell = (await reader.query(["SELECT '" + "я" * 13001 + "' AS text"]))["results"][0]
+    assert cell["truncation_reasons"] == ["cell_chars"]
+    assert cell["next_row_offset"] is None
+    assert cell["truncated_cells"] == [
+        {
+            "row_index": 1,
+            "column": "text",
+            "text_length": 13001,
+            "returned_chars": 12000,
+            "next_offset": 12000,
+        }
+    ]
+    tail = (
+        await reader.query(["SELECT substring('" + "я" * 13001 + "' from 12001) AS text"])
+    )["results"][0]
+    assert tail["rows"] == [{"text": "я" * 1001}]
+    assert tail["truncation_reasons"] == []
+    batch = await reader.query([
+        "SELECT '" + "x" * 4000 + "' AS text FROM generate_series(1,20)",
+        "SELECT 42 AS n",
+    ])
+    first, second = batch["results"]
+    assert first["truncation_reasons"] == ["result_chars"]
+    assert first["next_row_offset"] == first["row_count"]
+    assert second["rows"] == [{"n": 42}]
+    assert second["limits"]["result_chars"] < first["limits"]["result_chars"]
 
 
 async def test_cancelled_query_releases_role_and_temporary_view(

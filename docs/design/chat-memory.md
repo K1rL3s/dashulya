@@ -1,8 +1,8 @@
 # Chat memory
 
 The current runtime uses `HybridChatMemory`: canonical PostgreSQL originals with
-ParadeDB BM25 keyword recall and cached dense embeddings. It exposes two independent
-read tools, `search_memory` and `chat_history`.
+ParadeDB BM25 keyword recall and cached dense embeddings. It exposes independent
+read tools: `search_memory`, `chat_history` and `read_sources`.
 [ADR 0005](../adr/0005-unify-memory-in-postgresql.md) records unified storage and
 storage, preserving the hybrid pipeline from ADR 0004.
 [ADR 0008](../adr/0008-use-chat-isolated-paradedb.md) replaces the lexical scorer
@@ -14,6 +14,7 @@ independently of ranking.
 flowchart LR
     Request[Trusted conversation and send-time cutoff] --> Scope[Authorized canonical originals]
     Scope --> History[chat_history: scoped SQL]
+Scope --> Sources[read_sources: selected originals and reply pages]
     Scope --> Blocks[Message and bounded reply parents]
     Blocks --> Lexical[BM25]
     Blocks --> Dense[Cached dense vectors]
@@ -116,9 +117,23 @@ shutdown drains the whole retrieval lease, including evidence expansion.
 
 Hits carry canonical source IDs, originals, URLs and bounded reply/nearby
 context. Recall is bounded, and an empty result cannot prove absence or support
-an exact count. Read a complete original with
-`chat_history(sql=["SELECT * FROM messages WHERE source_id = 'returned ID' LIMIT 1"])`.
-Use `substring(text from ... for 12000)` to continue long text explicitly.
+an exact count. Read selected originals with `read_sources(source_ids=[...])`. It accepts up to
+ten canonical IDs, without a model-facing chat selector. Each source has its own
+page of the original and optional descendants in the same collection/topic,
+ordered by message ID. `offset` and `limit` (default five, maximum twenty) apply
+per source; each result gives `next_offset`. A missing or unauthorized source
+returns `not_found`, including originals edited at or after the trusted cutoff.
+The PostgreSQL reader selects bounded bodies directly instead of loading the
+whole corpus. Recursive traversal carries IDs only and has a statement deadline.
+
+`text_chars` defaults to 3000, with a maximum of 12000 per original and 48000 body
+characters shared fairly across the batch. `text_offset` and per-source metadata
+allow character continuation. A fresh `SourceReadTurn` tracks text ranges during
+each ask: repeated reads reference previously supplied evidence, while longer or
+different fragments remain available. Arbitrary SQL results are not deduplicated.
+`include_images` explicitly loads selected images with the same shared turn byte
+budget and omission statuses, independently of SQL result shape. These originals
+and images remain untrusted evidence, not permitted reply targets.
 
 `chat_history` accepts `sql` as a list of 1-5 PostgreSQL query strings, described
 directly in JSON Schema using `Annotated[list[str], Field(...)]`. One query is
@@ -150,7 +165,14 @@ administrative functions are rejected. A ten-second statement deadline, a
 twelve-second per-query deadline and a shared thirty-second batch query budget,
 bounded work memory and a server-side cursor bound execution and result reading. Return at most 50 rows, 32 uniquely named columns,
 12000 characters per cell and 48000 characters across all result rows in a batch.
-Results expose columns, rows, returned row_count and truncated; row_count is not the total match count.
+Results expose columns, rows, returned row_count and truncated; row_count is not
+the total match count. `truncation_reasons` distinguishes `rows`, `cell_chars` and
+`result_chars`. `limits` reports the actual row/cell caps, remaining result budget
+for that query and the shared batch cap. `truncated_cells` gives one-based result
+row indexes, column names, original lengths and zero-based continuation offsets.
+`next_row_offset` is relative to the submitted query: add it to an existing SQL
+OFFSET while retaining ORDER BY. SQL's own LIMIT can hide additional matches;
+`truncated=false` describes the query result, not completeness of saved history.
 The model receives positional row arrays under one column header per query,
 preserving exact cell values and query/error positions without repeating field
 names for every original. Independent reads belong in one batch; overview queries
@@ -159,7 +181,7 @@ Coverage explicitly remains incomplete. Missing saved ancestors prevent claims
 of complete live threads.
 
 `search_memory` keeps nullable `datetime` bounds with JSON Schema `date-time`
-descriptions and explicit timezone validation. Neither tool exposes a separate
+descriptions and explicit timezone validation. None of these tools exposes a separate
 chat-selector argument. Group SQL is already bound to the current group; only
 owner-private SQL needs a group-selection predicate such as `chat_id` or
 `chat_username`. The `chat` column is a canonical collection key, not a handle.

@@ -148,6 +148,8 @@ edits and worker recovery follow the
 
 ## Conversation context and delivery
 
+Disable link previews for all outgoing bot messages; links remain clickable.
+
 Public group generation recursively restores earlier request contexts using
 durable reply-trigger links, with the same 20-message window and five reply-parent
 hops at every level. Earlier rendered blocks remain a stable prefix; newer
@@ -253,6 +255,11 @@ It keeps follow-ups tied to their subject, requested action and constraints,
 using reply/quote and sender metadata to resolve references. It answers only
 the new point instead of restarting explanations; an explicit request to explain
 again gets a different explanation or concrete example.
+Standalone calculator commands and mechanical busywork, such as hashing a
+message, counting to a million or repeating text, receive a brief dismissal
+without execution, tools or workaround code, even after earlier compliance.
+Conceptual explanations, factual checks and meaningful counts of saved messages
+remain supported.
 
 ## Group registry
 

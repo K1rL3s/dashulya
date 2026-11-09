@@ -71,6 +71,7 @@ class TestDependency:
         assert [tool.name for tool in reply.tools] == [
             "search_memory",
             "chat_history",
+            "read_sources",
             "retry_image",
             "set_reaction",
             "youtube_transcript",
@@ -144,7 +145,7 @@ class TestDependency:
                     "/v1/responses",
                     "reply-model",
                     2,
-                    60,
+                    120,
                 ),
                 (
                     await container.get(Agent[bool]),
